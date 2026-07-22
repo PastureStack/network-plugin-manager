@@ -4,21 +4,22 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/containernetworking/cni/pkg/ns"
 	"github.com/docker/engine-api/client"
 	"github.com/pkg/errors"
-	"github.com/rancher/go-rancher-metadata/metadata"
 )
 
-func LocalNetworks(mc metadata.Client) ([]metadata.Network, map[string]metadata.Container, error) {
+func LocalNetworks(mc metadata.Client, dc *client.Client) ([]metadata.Network, map[string]metadata.Container, error) {
 	networks, err := mc.GetNetworks()
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "error fetching networks from metadata")
 	}
 
-	host, err := mc.GetSelfHost()
+	hostUUID, err := identity.LocalHostUUID(mc, dc)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "error fetching self host from metadata")
+		return nil, nil, errors.Wrap(err, "error fetching local host uuid")
 	}
 
 	services, err := mc.GetServices()
@@ -38,7 +39,7 @@ func LocalNetworks(mc metadata.Client) ([]metadata.Network, map[string]metadata.
 		}
 
 		for _, aContainer := range service.Containers {
-			if aContainer.HostUUID == host.UUID {
+			if aContainer.HostUUID == hostUUID {
 				routers[aContainer.NetworkUUID] = aContainer
 				localNetworks[aContainer.NetworkUUID] = true
 			}
@@ -60,9 +61,9 @@ func LocalNetworks(mc metadata.Client) ([]metadata.Network, map[string]metadata.
 }
 
 func ForEachContainerNS(dc *client.Client, mc metadata.Client, networkUUID string, f func(metadata.Container, ns.NetNS) error) error {
-	host, err := mc.GetSelfHost()
+	hostUUID, err := identity.LocalHostUUID(mc, dc)
 	if err != nil {
-		return errors.Wrap(err, "error fetching self host from metadata")
+		return errors.Wrap(err, "error fetching local host uuid")
 	}
 
 	containers, err := mc.GetContainers()
@@ -72,7 +73,7 @@ func ForEachContainerNS(dc *client.Client, mc metadata.Client, networkUUID strin
 
 	var lastError error
 	for _, aContainer := range containers {
-		if !(aContainer.HostUUID == host.UUID &&
+		if !(aContainer.HostUUID == hostUUID &&
 			aContainer.State == "running" &&
 			aContainer.ExternalId != "" &&
 			aContainer.PrimaryIp != "" &&

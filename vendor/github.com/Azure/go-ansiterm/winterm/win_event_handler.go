@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 package winterm
@@ -9,7 +10,7 @@ import (
 	"strconv"
 
 	"github.com/Azure/go-ansiterm"
-	"github.com/Sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
 var logger *logrus.Logger

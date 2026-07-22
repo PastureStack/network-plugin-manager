@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
+	"github.com/PastureStack/network-plugin-manager/network"
 	"github.com/containernetworking/cni/pkg/ns"
 	"github.com/docker/engine-api/client"
 	"github.com/pkg/errors"
-	"github.com/rancher/go-rancher-metadata/metadata"
-	"github.com/rancher/plugin-manager/network"
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
@@ -62,7 +62,7 @@ func (ms *MACSyncer) syncNTimes() {
 func (ms *MACSyncer) doSync() (bool, error) {
 	didSomething := false
 
-	networks, routers, err := network.LocalNetworks(ms.mc)
+	networks, routers, err := network.LocalNetworks(ms.mc, ms.dc)
 	if err != nil {
 		return didSomething, errors.Wrap(err, "getting local networks")
 	}

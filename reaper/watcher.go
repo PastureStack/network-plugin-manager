@@ -4,11 +4,12 @@ import (
 	"context"
 	"time"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/docker/engine-api/client"
 	"github.com/docker/engine-api/types"
 	"github.com/jpillora/backoff"
-	"github.com/rancher/go-rancher-metadata/metadata"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -57,7 +58,7 @@ func (w *watcher) onChangeNoError(version string) {
 }
 
 func (w *watcher) onChange(version string) error {
-	host, err := w.c.GetSelfHost()
+	host, err := identity.LocalHost(w.c, w.dc)
 	if err != nil {
 		return err
 	}

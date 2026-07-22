@@ -1,8 +1,8 @@
 package events
 
 import (
-	log "github.com/Sirupsen/logrus"
 	"github.com/fsouza/go-dockerclient"
+	log "github.com/sirupsen/logrus"
 	"time"
 )
 

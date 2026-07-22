@@ -5,12 +5,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
+	"github.com/PastureStack/network-plugin-manager/network"
 	"github.com/containernetworking/cni/pkg/ns"
 	"github.com/docker/engine-api/client"
 	"github.com/pkg/errors"
-	"github.com/rancher/go-rancher-metadata/metadata"
-	"github.com/rancher/plugin-manager/network"
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
@@ -22,7 +23,7 @@ var (
 
 // ARPTableWatcher checks the ARP table periodically for invalid entries
 // and programs the appropriate ones if necessary based on info available
-// from rancher-metadata
+// from the platform metadata service
 type ARPTableWatcher struct {
 	syncInterval     time.Duration
 	mc               metadata.Client
@@ -86,9 +87,9 @@ func buildContainersMap(containers []metadata.Container,
 }
 
 func (atw *ARPTableWatcher) doSync() error {
-	host, err := atw.mc.GetSelfHost()
+	host, err := identity.LocalHost(atw.mc, atw.dc)
 	if err != nil {
-		return errors.Wrap(err, "get self host")
+		return errors.Wrap(err, "get local host")
 	}
 
 	containers, err := atw.mc.GetContainers()
@@ -97,7 +98,7 @@ func (atw *ARPTableWatcher) doSync() error {
 	}
 
 	var lastError error
-	localNetworks, routers, err := network.LocalNetworks(atw.mc)
+	localNetworks, routers, err := network.LocalNetworks(atw.mc, atw.dc)
 	if err != nil {
 		return errors.Wrap(err, "get local networks")
 	}
@@ -129,12 +130,13 @@ func (atw *ARPTableWatcher) doSync() error {
 
 			atw.routerApplyTries++
 			logrus.Infof("Network router changed, syncing ARP tables %d/10 in containers, new MAC: %v", atw.routerApplyTries, networkDriverMacAddress)
-			err := network.ForEachContainerNS(atw.dc, atw.mc, localNetwork.UUID, func(container metadata.Container, _ ns.NetNS) error {
-				return syncArpTable(container.ExternalId, networkDriverMacAddress, containersMap, host)
-			})
-			if err != nil {
-				lastError = err
-			}
+		}
+
+		err = network.ForEachContainerNS(atw.dc, atw.mc, localNetwork.UUID, func(container metadata.Container, _ ns.NetNS) error {
+			return syncArpTable(container.ExternalId, networkDriverMacAddress, containersMap, host)
+		})
+		if err != nil {
+			lastError = err
 		}
 	}
 
@@ -154,26 +156,158 @@ func syncArpTable(context string, networkDriverMacAddress string, containersMap 
 	}
 	logrus.Debugf("arpsync: entries=%+v", entries)
 
+	var lastError error
+	seen := map[string]bool{}
+	localIPs := localInterfaceIPs()
+	networkDriverContext := isNetworkDriverContext(context, networkDriverMacAddress, containersMap)
+
 	for _, aEntry := range entries {
+		if aEntry.IP == nil {
+			continue
+		}
+		seen[aEntry.IP.String()] = true
+
 		if container, found := containersMap[aEntry.IP.String()]; found {
-			expected := networkDriverMacAddress
-			if container.HostUUID == host.UUID {
-				expected = container.PrimaryMacAddress
+			expected, manageEntry := expectedARPEntry(context, networkDriverMacAddress, container, host, networkDriverContext)
+			if !manageEntry {
+				if aEntry.HardwareAddr.String() == networkDriverMacAddress {
+					logrus.Infof("arpsync: (%s) deleting router self-referential ARP entry found=%+v for remote container", context, aEntry)
+					if err := deleteARPEntry(context, aEntry); err != nil {
+						lastError = err
+					}
+				}
+				continue
 			}
 
 			if aEntry.HardwareAddr.String() != expected {
 				logrus.Infof("arpsync: (%s) wrong ARP entry found=%+v(expected: %v) for local container, fixing it", context, aEntry, expected)
-				fixARPEntry(aEntry, expected)
+				if err := fixARPEntry(context, aEntry, expected); err != nil {
+					lastError = err
+				}
 			}
 		} else {
 			logrus.Debugf("arpsync: container not found for ARP entry: %+v", aEntry)
 		}
 	}
 
+	for ip, container := range containersMap {
+		if seen[ip] || localIPs[ip] {
+			continue
+		}
+
+		expected, manageEntry := expectedARPEntry(context, networkDriverMacAddress, container, host, networkDriverContext)
+		if !manageEntry {
+			continue
+		}
+
+		if err := addARPEntry(context, ip, expected); err != nil {
+			lastError = err
+		}
+	}
+
+	return lastError
+}
+
+func isNetworkDriverContext(context string, networkDriverMacAddress string, containersMap map[string]*metadata.Container) bool {
+	for _, container := range containersMap {
+		if container.ExternalId == context && container.PrimaryMacAddress == networkDriverMacAddress {
+			return true
+		}
+	}
+
+	return false
+}
+
+func expectedARPEntry(context string, networkDriverMacAddress string, container *metadata.Container, host metadata.Host, networkDriverContext bool) (string, bool) {
+	if container.HostUUID == host.UUID {
+		return container.PrimaryMacAddress, true
+	}
+
+	if networkDriverContext {
+		return "", false
+	}
+
+	return networkDriverMacAddress, true
+}
+
+func localInterfaceIPs() map[string]bool {
+	localIPs := map[string]bool{}
+	links, err := netlink.LinkList()
+	if err != nil {
+		logrus.Errorf("arpsync: error listing local links: %v", err)
+		return localIPs
+	}
+
+	for _, link := range links {
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		if err != nil {
+			logrus.Errorf("arpsync: error listing addresses for link %s: %v", link.Attrs().Name, err)
+			continue
+		}
+		for _, addr := range addrs {
+			if addr.IP != nil {
+				localIPs[addr.IP.String()] = true
+			}
+		}
+	}
+
+	return localIPs
+}
+
+func addARPEntry(context string, ipAddress string, macAddress string) error {
+	ip := net.ParseIP(ipAddress)
+	if ip == nil {
+		return errors.Errorf("invalid IP address %s", ipAddress)
+	}
+
+	hwAddr, err := net.ParseMAC(macAddress)
+	if err != nil {
+		logrus.Errorf("arpsync: couldn't parse MAC address(%v): %v", macAddress, err)
+		return err
+	}
+
+	routes, err := netlink.RouteGet(ip)
+	if err != nil {
+		logrus.Errorf("arpsync: (%s) error resolving route for missing ARP entry %s: %v", context, ipAddress, err)
+		return err
+	}
+	if len(routes) == 0 {
+		return errors.Errorf("no route found for missing ARP entry %s", ipAddress)
+	}
+
+	newEntry := netlink.Neigh{
+		LinkIndex:    routes[0].LinkIndex,
+		IP:           ip,
+		HardwareAddr: hwAddr,
+		State:        arpEntryState(context),
+	}
+
+	logrus.Infof("arpsync: (%s) missing ARP entry for %s, adding MAC %s on link %d with state %d", context, ipAddress, macAddress, routes[0].LinkIndex, newEntry.State)
+	if err := netlink.NeighSet(&newEntry); err != nil {
+		logrus.Errorf("arpsync: error adding ARP entry: %v", err)
+		return err
+	}
+
 	return nil
 }
 
-func fixARPEntry(oldEntry netlink.Neigh, newMACAddress string) error {
+func deleteARPEntry(context string, entry netlink.Neigh) error {
+	if err := netlink.NeighDel(&entry); err != nil {
+		logrus.Errorf("arpsync: (%s) error deleting ARP entry: %v", context, err)
+		return err
+	}
+	return nil
+}
+
+func arpEntryState(context string) int {
+	if context == "host" {
+		return netlink.NUD_REACHABLE
+	}
+
+	return netlink.NUD_PERMANENT
+}
+
+func fixARPEntry(context string, oldEntry netlink.Neigh, newMACAddress string) error {
 	var err error
 	var newHardwareAddr net.HardwareAddr
 	if newHardwareAddr, err = net.ParseMAC(newMACAddress); err != nil {
@@ -182,7 +316,7 @@ func fixARPEntry(oldEntry netlink.Neigh, newMACAddress string) error {
 	}
 	newEntry := oldEntry
 	newEntry.HardwareAddr = newHardwareAddr
-	newEntry.State = netlink.NUD_REACHABLE
+	newEntry.State = arpEntryState(context)
 	if err = netlink.NeighSet(&newEntry); err != nil {
 		logrus.Errorf("arpsync: error changing ARP entry: %v", err)
 		return err

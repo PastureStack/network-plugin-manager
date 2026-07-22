@@ -1,4 +1,5 @@
-./bin
-./.dapper
-./dist
-./.trash-cache
+bin/*
+!bin/network-plugin-manager
+.dapper
+dist
+.trash-cache

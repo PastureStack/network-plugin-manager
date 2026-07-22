@@ -1,0 +1,84 @@
+#!/bin/bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+failures=0
+
+fail() {
+    echo "NETWORK_PLUGIN_MANAGER_BUILD_POLICY_FAIL $*"
+    failures=$((failures + 1))
+}
+
+require_pattern() {
+    local file="$1"
+    local pattern="$2"
+    local label="$3"
+    grep -Eq -- "$pattern" "$file" || fail "$label"
+}
+
+reject_pattern() {
+    local file="$1"
+    local pattern="$2"
+    local label="$3"
+    if grep -Eq -- "$pattern" "$file"; then
+        fail "$label"
+    fi
+}
+
+bash -n scripts/build scripts/ci scripts/package scripts/validate scripts/version \
+    package/start.sh package/platform-entrypoint.sh package/update-platform-ca
+
+require_pattern Dockerfile.dapper 'FROM ubuntu:26\.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb' "dapper_base_not_pinned"
+require_pattern Dockerfile.dapper 'ARG GO_VERSION=1\.26\.5' "go_version_not_current"
+require_pattern Dockerfile.dapper 'GO_LINUX_AMD64_SHA256=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053' "go_amd64_sha_not_current"
+require_pattern Dockerfile.dapper 'GO_LINUX_ARM64_SHA256=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49' "go_arm64_sha_not_current"
+require_pattern Dockerfile.dapper 'ARG DOCKER_VERSION=29\.6\.2' "dapper_docker_version_not_current"
+require_pattern Dockerfile.dapper 'DOCKER_LINUX_AMD64_SHA256=d6204aea92238e2453d5445c885b9d2e5eb8f82915568ec50edf9dbe12a3ac74' "dapper_docker_amd64_sha_not_current"
+require_pattern Dockerfile.dapper 'DOCKER_LINUX_ARM64_SHA256=8d16d8b3b158c132a9fb9963d4b4345746f925e287e154c9ed880ac257baf292' "dapper_docker_arm64_sha_not_current"
+require_pattern Dockerfile.dapper 'ARG BUILDX_VERSION=0\.34\.1' "buildx_version_not_current"
+require_pattern Dockerfile.dapper 'ARG UBUNTU_SNAPSHOT=20260722T164940Z' "dapper_ubuntu_snapshot_not_pinned"
+require_pattern Dockerfile.dapper 'ARG UBUNTU_SNAPSHOT_BASE=https://snapshot\.ubuntu\.com/ubuntu' "dapper_snapshot_service_missing"
+require_pattern Dockerfile.dapper 'ADD --checksum=sha256:6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90' "dapper_snapshot_ca_bootstrap_not_pinned"
+require_pattern Dockerfile.dapper 'BUILDX_LINUX_AMD64_SHA256=f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b' "buildx_amd64_sha_not_current"
+require_pattern Dockerfile.dapper 'BUILDX_LINUX_ARM64_SHA256=c34e32dd6ea2653d960d6c099c9f09b9077e4a37504d2d31e5066eccc3904231' "buildx_arm64_sha_not_current"
+require_pattern Makefile 'DOCKER_VERSION \?= 29\.6\.2' "makefile_docker_version_not_current"
+require_pattern Makefile 'BUILDX_VERSION \?= 0\.34\.1' "makefile_buildx_version_not_current"
+require_pattern Makefile 'UBUNTU_SNAPSHOT \?= 20260722T164940Z' "makefile_ubuntu_snapshot_not_pinned"
+require_pattern Makefile 'DAPPER_IMAGE \?= pasturestack-network-plugin-manager-dapper:go1\.26\.5-docker29\.6\.2-buildx0\.34\.1' "dapper_image_identity_not_pinned"
+require_pattern Dockerfile.dapper 'curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 300[[:space:]]+\\' "dapper_curl_not_bounded"
+require_pattern Dockerfile.dapper '-o /tmp/go\.tgz "https://go\.dev/dl/go\$\{GO_VERSION\}\.linux-\$\{go_arch\}\.tar\.gz"' "go_download_not_file_backed"
+require_pattern Dockerfile.dapper '-o /tmp/docker\.tgz "https://download\.docker\.com/linux/static/stable/\$\{docker_arch\}/docker-\$\{DOCKER_VERSION\}\.tgz"' "dapper_docker_download_not_file_backed"
+reject_pattern Dockerfile.dapper 'curl[^|]*\|[[:space:]]*tar' "legacy_pipe_to_tar_download"
+
+require_pattern package/Dockerfile 'FROM ubuntu:26\.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb' "runtime_base_not_pinned"
+require_pattern package/Dockerfile 'ARG DOCKER_VERSION=29\.6\.2' "package_docker_version_not_current"
+require_pattern package/Dockerfile 'DOCKER_LINUX_AMD64_SHA256=d6204aea92238e2453d5445c885b9d2e5eb8f82915568ec50edf9dbe12a3ac74' "package_docker_sha_not_current"
+require_pattern package/Dockerfile 'ARG IMAGE_VERSION=dev' "image_version_arg_missing"
+require_pattern package/Dockerfile 'ARG SOURCE_DATE_EPOCH' "source_date_epoch_arg_missing"
+require_pattern package/Dockerfile 'ARG UBUNTU_SNAPSHOT=20260722T164940Z' "runtime_ubuntu_snapshot_not_pinned"
+require_pattern package/Dockerfile 'ARG UBUNTU_SNAPSHOT_BASE=https://snapshot\.ubuntu\.com/ubuntu' "runtime_snapshot_service_missing"
+require_pattern package/Dockerfile 'ADD --checksum=sha256:6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90' "runtime_snapshot_ca_bootstrap_not_pinned"
+require_pattern package/Dockerfile 'Acquire::https::CaInfo "/etc/ssl/certs/ca-certificates\.crt"' "runtime_snapshot_ca_not_enforced"
+require_pattern package/Dockerfile '/var/log/alternatives\.log /var/cache/ldconfig/aux-cache' "runtime_nondeterministic_package_state_not_removed"
+require_pattern package/Dockerfile 'snapshot_uri="\$\{UBUNTU_SNAPSHOT_BASE%/\}/\$\{UBUNTU_SNAPSHOT\}"' "runtime_snapshot_uri_missing"
+reject_pattern package/Dockerfile 'ARG UBUNTU_MIRROR=' "rolling_runtime_mirror_override_present"
+require_pattern package/Dockerfile 'org\.opencontainers\.image\.source="https://github\.com/PastureStack/network-plugin-manager"' "oci_source_label_missing"
+require_pattern package/Dockerfile 'org\.opencontainers\.image\.revision="\$\{IMAGE_REVISION\}"' "oci_revision_label_missing"
+require_pattern scripts/package '--build-arg IMAGE_REVISION="\$\{IMAGE_REVISION\}"' "package_revision_build_arg_missing"
+require_pattern scripts/package '--build-arg SOURCE_DATE_EPOCH="\$\{SOURCE_DATE_EPOCH\}"' "package_source_date_epoch_missing"
+require_pattern scripts/package '--build-arg UBUNTU_SNAPSHOT="\$\{UBUNTU_SNAPSHOT\}"' "package_ubuntu_snapshot_missing"
+require_pattern scripts/package 'rewrite-timestamp=true,compatibility-version=20' "reproducible_image_export_missing"
+
+require_pattern package/update-platform-ca 'PLATFORM_CA_ROOT:-/var/lib/pasturestack/etc/ssl/ca\.crt' "platform_ca_root_missing"
+require_pattern package/update-platform-ca 'legacy_ca_root="/var/lib/rancher/etc/ssl/ca\.crt"' "legacy_ca_fallback_missing"
+reject_pattern package/update-platform-ca 'curl[[:space:]]' "unexpected_ca_network_fetch"
+reject_pattern package/Dockerfile 'gmail\.com|users\.noreply\.github\.com|C:\\Users|/Users/' "personal_marker_in_runtime_image"
+require_pattern .dockerignore '^!bin/network-plugin-manager$' "verified_binary_excluded_from_build_context"
+
+echo "failure_count=${failures}"
+if [ "$failures" -ne 0 ]; then
+    exit 1
+fi
+
+echo "NETWORK_PLUGIN_MANAGER_BUILD_POLICY_OK go=1.26.5 docker=29.6.2 buildx=0.34.1 pinned_base=1 pinned_apt_snapshot=1 reproducible_export=1 verified_downloads=1 oci_provenance=1 ca_fetch=local_only"

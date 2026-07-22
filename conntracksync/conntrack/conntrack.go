@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
 // CTEntry represents one entry from the conntrack table
@@ -21,6 +21,8 @@ type CTEntry struct {
 	ReplyDestinationIP      string
 	ReplySourcePort         string
 	ReplyDestinationPort    string
+	Unreplied               bool
+	Assured                 bool
 }
 
 // ListSNAT lists only SNAT conntrack entries
@@ -133,7 +135,15 @@ func parseOneConntrackEntry(e string) (CTEntry, error) {
 	protocol := fields[0]
 
 	for _, field := range fields[3:] {
-		if !(field == "[UNREPLIED]" || field == "[ASSURED]") {
+		if field == "[UNREPLIED]" {
+			ctEntry.Unreplied = true
+			continue
+		}
+		if field == "[ASSURED]" {
+			ctEntry.Assured = true
+			continue
+		}
+		{
 			kv := strings.Split(field, "=")
 			if len(kv) != 2 {
 				continue

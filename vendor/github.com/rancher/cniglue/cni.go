@@ -63,7 +63,10 @@ func NewCNIExec(state *DockerPluginState) (*CNIExec, error) {
 	}
 
 	if uuid, ok := state.Config.Labels["io.rancher.container.uuid"]; ok {
-		c.runtimeConf.Args = append(c.runtimeConf.Args, [2]string{"RancherContainerUUID", uuid})
+		c.runtimeConf.Args = append(c.runtimeConf.Args,
+			[2]string{"RancherContainerUUID", uuid},
+			[2]string{"PlatformContainerUUID", uuid},
+		)
 	}
 
 	if linkMTUOverhead, ok := state.Config.Labels["io.rancher.cni.link_mtu_overhead"]; ok {

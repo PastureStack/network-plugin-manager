@@ -9,11 +9,10 @@ import (
 
 const (
 	defaultUnixSocket = "unix:///var/run/docker.sock"
-	defaultAPIVersion = "1.18"
 )
 
 func NewDockerClient() (*docker.Client, error) {
-	apiVersion := getenv("DOCKER_API_VERSION", defaultAPIVersion)
+	apiVersion := os.Getenv("DOCKER_API_VERSION")
 	endpoint := defaultUnixSocket
 
 	if os.Getenv("CATTLE_DOCKER_USE_BOOT2DOCKER") == "true" {
@@ -25,17 +24,15 @@ func NewDockerClient() (*docker.Client, error) {
 			cert := path.Join(certPath, "cert.pem")
 			key := path.Join(certPath, "key.pem")
 			ca := path.Join(certPath, "ca.pem")
+			if apiVersion == "" {
+				return docker.NewTLSClient(endpoint, cert, key, ca)
+			}
 			return docker.NewVersionedTLSClient(endpoint, cert, key, ca, apiVersion)
 		}
 	}
 
-	return docker.NewVersionedClient(endpoint, apiVersion)
-}
-
-func getenv(key string, defaultVal string) string {
-	val := os.Getenv(key)
-	if val == "" {
-		val = defaultVal
+	if apiVersion == "" {
+		return docker.NewClient(endpoint)
 	}
-	return val
+	return docker.NewVersionedClient(endpoint, apiVersion)
 }

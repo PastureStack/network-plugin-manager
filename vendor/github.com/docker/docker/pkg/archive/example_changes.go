@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 // Simple tool to create an archive stream from an old and new directory
@@ -13,8 +14,8 @@ import (
 	"os"
 	"path"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/pkg/archive"
+	"github.com/sirupsen/logrus"
 )
 
 var (

@@ -7,18 +7,18 @@ import (
 	"os"
 	"strings"
 
-	log "github.com/Sirupsen/logrus"
 	"github.com/fsouza/go-dockerclient"
 	"github.com/rancher/event-subscriber/locks"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
-	RancherNameserver  = "169.254.169.250"
-	RancherDomain      = "rancher.internal"
-	RancherDNS         = "io.rancher.container.dns"
-	RancherDNSPriority = "io.rancher.container.dns.priority"
-	RancherNetwork     = "io.rancher.container.network"
-	CNILabel           = "io.rancher.cni.network"
+	MetadataNameserver     = "169.254.169.250"
+	PlatformDomain         = "pasture.internal"
+	LegacyDNSLabel         = "io.rancher.container.dns"
+	LegacyDNSPriorityLabel = "io.rancher.container.dns.priority"
+	LegacyNetworkLabel     = "io.rancher.container.network"
+	CNILabel               = "io.rancher.cni.network"
 )
 
 type StartHandler struct {
@@ -33,13 +33,14 @@ func getDNSSearch(container *docker.Container) []string {
 	//from labels - for upgraded systems
 	if container.Config.Labels != nil {
 		if value, ok := container.Config.Labels["io.rancher.stack_service.name"]; ok {
-			splitted := strings.Split(value, "/")
-			svc := strings.ToLower(splitted[1])
-			stack := strings.ToLower(splitted[0])
-			svcNameSpace = svc + "." + stack + "." + RancherDomain
-			stackNameSpace = stack + "." + RancherDomain
-			defaultDomains = append(defaultDomains, svcNameSpace)
-			defaultDomains = append(defaultDomains, stackNameSpace)
+			parts := strings.SplitN(value, "/", 2)
+			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+				svc := strings.ToLower(parts[1])
+				stack := strings.ToLower(parts[0])
+				svcNameSpace = svc + "." + stack + "." + PlatformDomain
+				stackNameSpace = stack + "." + PlatformDomain
+				defaultDomains = append(defaultDomains, svcNameSpace, stackNameSpace)
+			}
 		}
 	}
 
@@ -52,15 +53,14 @@ func getDNSSearch(container *docker.Container) []string {
 		}
 	}
 
-	// default rancher domain
-	defaultDomains = append(defaultDomains, RancherDomain)
+	defaultDomains = append(defaultDomains, PlatformDomain)
 
 	log.Debugf("defaultDomains: %v", defaultDomains)
 	return defaultDomains
 }
 
 func setupResolvConf(container *docker.Container) error {
-	log.Debugf("setupResolvConf for container: %+v", container)
+	log.Debugf("Setting up resolver configuration for container %s", container.ID)
 	if container.ResolvConfPath == "/etc/resolv.conf" {
 		// Don't shoot ourself in the foot and change our own DNS
 		log.Debugf("resolv.conf already set for container: %v, skipping", container.ID)
@@ -81,7 +81,7 @@ func setupResolvConf(container *docker.Container) error {
 	for scanner.Scan() {
 		text := scanner.Text()
 
-		if strings.Contains(text, RancherNameserver) {
+		if strings.Contains(text, MetadataNameserver) {
 			nameserverSet = true
 		} else if strings.HasPrefix(text, "nameserver") {
 			text = "# " + text
@@ -96,7 +96,7 @@ func setupResolvConf(container *docker.Container) error {
 				domainsToBeAdded = append(domainsToBeAdded, domain)
 			}
 
-			if container.Config.Labels[RancherDNSPriority] == "service_last" {
+			if container.Config.Labels[LegacyDNSPriorityLabel] == "service_last" {
 				text = text + " " + strings.Join(domainsToBeAdded, " ")
 			} else {
 				text = strings.Replace(text, "search", "search "+strings.Join(domainsToBeAdded, " "), 1)
@@ -113,6 +113,9 @@ func setupResolvConf(container *docker.Container) error {
 			return err
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
 
 	if !searchSet {
 		buffer.Write([]byte("search " + strings.ToLower(strings.Join(getDNSSearch(container), " "))))
@@ -121,12 +124,11 @@ func setupResolvConf(container *docker.Container) error {
 
 	if !nameserverSet {
 		buffer.Write([]byte("nameserver "))
-		buffer.Write([]byte(RancherNameserver))
+		buffer.Write([]byte(MetadataNameserver))
 		buffer.Write([]byte("\n"))
 	}
 
-	input.Close()
-	return ioutil.WriteFile(container.ResolvConfPath, buffer.Bytes(), 0666)
+	return ioutil.WriteFile(container.ResolvConfPath, buffer.Bytes(), 0644)
 }
 
 func (h *StartHandler) Handle(event *docker.APIEvents) error {
@@ -148,12 +150,12 @@ func (h *StartHandler) Handle(event *docker.APIEvents) error {
 		return nil
 	}
 
-	if c.Config.Labels[RancherDNS] == "false" {
+	if c.Config.Labels[LegacyDNSLabel] == "false" {
 		return nil
 	}
 
-	if c.Config.Labels[CNILabel] != "" || c.Config.Labels[RancherDNS] == "true" ||
-		c.Config.Labels[RancherNetwork] == "true" {
+	if c.Config.Labels[CNILabel] != "" || c.Config.Labels[LegacyDNSLabel] == "true" ||
+		c.Config.Labels[LegacyNetworkLabel] == "true" {
 		log.Infof("Setting up resolv.conf for ContainerId [%s]", event.ID)
 		return setupResolvConf(c)
 	}

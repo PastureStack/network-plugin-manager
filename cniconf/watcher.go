@@ -10,9 +10,11 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
+	"github.com/docker/engine-api/client"
 	"github.com/rancher/cniglue"
-	"github.com/rancher/go-rancher-metadata/metadata"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -24,9 +26,10 @@ func init() {
 	glue.CniDir = cniDir
 }
 
-func Watch(c metadata.Client) error {
+func Watch(c metadata.Client, dc *client.Client) error {
 	w := &watcher{
 		c:       c,
+		dc:      dc,
 		applied: map[string]metadata.Network{},
 	}
 	go c.OnChange(5, w.onChangeNoError)
@@ -35,6 +38,7 @@ func Watch(c metadata.Client) error {
 
 type watcher struct {
 	c           metadata.Client
+	dc          *client.Client
 	applied     map[string]metadata.Network
 	lastApplied time.Time
 }
@@ -51,7 +55,7 @@ func (w *watcher) onChange(version string) error {
 		return err
 	}
 
-	host, err := w.c.GetSelfHost()
+	hostUUID, err := identity.LocalHostUUID(w.c, w.dc)
 	if err != nil {
 		return err
 	}
@@ -61,18 +65,7 @@ func (w *watcher) onChange(version string) error {
 		return err
 	}
 
-	localNetworks := map[string]bool{}
-	for _, service := range services {
-		if service.Kind != "networkDriverService" {
-			continue
-		}
-
-		for _, aContainer := range service.Containers {
-			if aContainer.HostUUID == host.UUID {
-				localNetworks[aContainer.NetworkUUID] = true
-			}
-		}
-	}
+	localNetworks := localCNINetworks(networks, services, hostUUID)
 	logrus.Debugf("localNetworks: %v", localNetworks)
 
 	forceApply := time.Now().Sub(w.lastApplied) > reapplyEvery
@@ -95,6 +88,40 @@ func (w *watcher) onChange(version string) error {
 	}
 
 	return nil
+}
+
+// localCNINetworks returns the CNI-managed networks that must be configured on
+// this host. Network driver services run in the host network namespace, so the
+// driver's container NetworkUUID identifies the host network rather than the
+// managed overlay network. A local network driver therefore owns every network
+// that advertises a cniConfig in metadata.
+func localCNINetworks(networks []metadata.Network, services []metadata.Service, hostUUID string) map[string]bool {
+	result := map[string]bool{}
+	hasLocalNetworkDriver := false
+	for _, service := range services {
+		if service.Kind != "networkDriverService" {
+			continue
+		}
+		for _, aContainer := range service.Containers {
+			if aContainer.HostUUID == hostUUID {
+				hasLocalNetworkDriver = true
+				break
+			}
+		}
+		if hasLocalNetworkDriver {
+			break
+		}
+	}
+
+	if !hasLocalNetworkDriver {
+		return result
+	}
+	for _, network := range networks {
+		if _, ok := network.Metadata["cniConfig"].(map[string]interface{}); ok {
+			result[network.UUID] = true
+		}
+	}
+	return result
 }
 
 func (w *watcher) apply(network metadata.Network) error {

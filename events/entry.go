@@ -1,9 +1,9 @@
 package events
 
 import (
+	"github.com/PastureStack/network-plugin-manager/binexec"
+	"github.com/PastureStack/network-plugin-manager/network"
 	"github.com/fsouza/go-dockerclient"
-	"github.com/rancher/plugin-manager/binexec"
-	"github.com/rancher/plugin-manager/network"
 )
 
 const (

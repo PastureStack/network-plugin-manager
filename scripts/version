@@ -1,5 +1,12 @@
 #!/bin/bash
 
+if [ -n "$VERSION_OVERRIDE" ]; then
+    VERSION="$VERSION_OVERRIDE"
+    IMAGE_VERSION="$VERSION_OVERRIDE"
+elif [ -n "$RELEASE_VERSION" ]; then
+    VERSION="$RELEASE_VERSION"
+    IMAGE_VERSION="$RELEASE_VERSION"
+else
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     DIRTY="-dirty"
 fi
@@ -13,6 +20,7 @@ if [[ -z "$DIRTY" && -n "$GIT_TAG" ]]; then
 else
     VERSION="${COMMIT}${DIRTY}"
     IMAGE_VERSION=dev
+fi
 fi
 
 if [ -z "$ARCH" ]; then

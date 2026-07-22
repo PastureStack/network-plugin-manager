@@ -6,5 +6,9 @@ source $(dirname $0)/version
 cd $(dirname $0)/..
 
 mkdir -p bin
-[ "$(uname)" != "Darwin" ] && LINKFLAGS="-linkmode external -extldflags -static -s"
-CGO_ENABLED=0 go build -ldflags "-X main.VERSION=$VERSION $LINKFLAGS" -o bin/plugin-manager
+[ "$(uname)" != "Darwin" ] && LINKFLAGS="-s -w"
+CGO_ENABLED=0 go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags "-buildid= -X main.VERSION=$VERSION $LINKFLAGS" \
+    -o bin/network-plugin-manager

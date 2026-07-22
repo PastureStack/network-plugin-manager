@@ -4,21 +4,21 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/network-plugin-manager/arpsync"
+	"github.com/PastureStack/network-plugin-manager/binexec"
+	"github.com/PastureStack/network-plugin-manager/cniconf"
+	"github.com/PastureStack/network-plugin-manager/conntracksync"
+	"github.com/PastureStack/network-plugin-manager/events"
+	"github.com/PastureStack/network-plugin-manager/hostnat"
+	"github.com/PastureStack/network-plugin-manager/hostports"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
+	"github.com/PastureStack/network-plugin-manager/macsync"
+	"github.com/PastureStack/network-plugin-manager/network"
+	"github.com/PastureStack/network-plugin-manager/reaper"
+	"github.com/PastureStack/network-plugin-manager/routesync"
 	"github.com/docker/engine-api/client"
 	"github.com/pkg/errors"
-	"github.com/rancher/go-rancher-metadata/metadata"
-	"github.com/rancher/plugin-manager/arpsync"
-	"github.com/rancher/plugin-manager/binexec"
-	"github.com/rancher/plugin-manager/cniconf"
-	"github.com/rancher/plugin-manager/conntracksync"
-	"github.com/rancher/plugin-manager/events"
-	"github.com/rancher/plugin-manager/hostnat"
-	"github.com/rancher/plugin-manager/hostports"
-	"github.com/rancher/plugin-manager/macsync"
-	"github.com/rancher/plugin-manager/network"
-	"github.com/rancher/plugin-manager/reaper"
-	"github.com/rancher/plugin-manager/routesync"
+	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 )
 
@@ -27,12 +27,12 @@ var VERSION = "v0.0.0-dev"
 
 func main() {
 	app := cli.NewApp()
-	app.Name = "plugin-manager"
+	app.Name = "network-plugin-manager"
 	app.Version = VERSION
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
 			Name:  "metadata-url",
-			Value: "http://rancher-metadata/2016-07-29",
+			Value: "http://metadata/2016-07-29",
 		},
 		cli.StringFlag{
 			Name:  "conntracksync-interval",
@@ -92,19 +92,19 @@ func run(c *cli.Context) error {
 		logrus.Errorf("Failed to start unmanaged container reaper: %v", err)
 	}
 
-	if err := hostports.Watch(mClient); err != nil {
+	if err := hostports.Watch(mClient, dClient); err != nil {
 		logrus.Errorf("Failed to start host ports configuration: %v", err)
 	}
 
-	if err := hostnat.Watch(mClient); err != nil {
+	if err := hostnat.Watch(mClient, dClient); err != nil {
 		logrus.Errorf("Failed to start host nat configuration: %v", err)
 	}
 
-	if err := conntracksync.Watch(c.String("conntracksync-interval"), mClient); err != nil {
+	if err := conntracksync.Watch(c.String("conntracksync-interval"), mClient, dClient); err != nil {
 		logrus.Errorf("Failed to start conntracksync: %v", err)
 	}
 
-	if err := cniconf.Watch(mClient); err != nil {
+	if err := cniconf.Watch(mClient, dClient); err != nil {
 		logrus.Errorf("Failed to start cni config: %v", err)
 	}
 

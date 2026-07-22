@@ -5,9 +5,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Sirupsen/logrus"
-	"github.com/rancher/go-rancher-metadata/metadata"
-	"github.com/rancher/plugin-manager/conntracksync/conntrack"
+	"github.com/PastureStack/network-plugin-manager/conntracksync/conntrack"
+	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
+	"github.com/docker/engine-api/client"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -18,16 +20,17 @@ var (
 
 // ConntrackTableWatcher checks the conntrack table periodically for invalid
 // entries and programs the appropriate ones if necessary based on info
-// available from rancher-metadata
+// available from the platform metadata service
 type ConntrackTableWatcher struct {
 	syncInterval time.Duration
 	mc           metadata.Client
+	dc           *client.Client
 	lastApplied  time.Time
 }
 
 // Watch starts the go routine to periodically check the conntrack table
 // for any discrepancies
-func Watch(syncIntervalStr string, mc metadata.Client) error {
+func Watch(syncIntervalStr string, mc metadata.Client, dc *client.Client) error {
 	logrus.Debugf("ctsync: syncIntervalStr: %v", syncIntervalStr)
 
 	syncInterval := DefaultSyncInterval
@@ -39,6 +42,7 @@ func Watch(syncIntervalStr string, mc metadata.Client) error {
 	ctw := &ConntrackTableWatcher{
 		syncInterval: time.Duration(syncInterval) * time.Second,
 		mc:           mc,
+		dc:           dc,
 	}
 
 	go mc.OnChange(120, ctw.onChangeNoError)
@@ -124,9 +128,9 @@ func (ctw *ConntrackTableWatcher) doSync() error {
 
 func (ctw *ConntrackTableWatcher) buildContainersMaps() (
 	map[string]*metadata.Container, error) {
-	host, err := ctw.mc.GetSelfHost()
+	host, err := identity.LocalHost(ctw.mc, ctw.dc)
 	if err != nil {
-		logrus.Errorf("conntracksync: error fetching self host from metadata")
+		logrus.Errorf("conntracksync: error fetching local host")
 		return nil, err
 	}
 
