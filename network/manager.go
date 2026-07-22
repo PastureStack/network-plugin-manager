@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	cniTypes "github.com/containernetworking/cni/pkg/types"
 	"github.com/docker/docker/pkg/locker"
 	"github.com/docker/engine-api/client"
@@ -16,6 +15,7 @@ import (
 	"github.com/docker/engine-api/types/container"
 	"github.com/pkg/errors"
 	glue "github.com/rancher/cniglue"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -23,7 +23,7 @@ const (
 	IPLabel               = "io.rancher.container.ip"
 	LegacyManagedNetLabel = "io.rancher.container.network"
 	CNILabel              = "io.rancher.cni.network"
-	rootStateDir          = "/var/lib/rancher/state/cni"
+	rootStateDir          = "/var/lib/pasturestack/state/cni"
 )
 
 type Manager struct {

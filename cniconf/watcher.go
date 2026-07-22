@@ -10,9 +10,11 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
+	"github.com/docker/engine-api/client"
 	"github.com/rancher/cniglue"
-	"github.com/rancher/go-rancher-metadata/metadata"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -24,9 +26,10 @@ func init() {
 	glue.CniDir = cniDir
 }
 
-func Watch(c metadata.Client) error {
+func Watch(c metadata.Client, dc *client.Client) error {
 	w := &watcher{
 		c:       c,
+		dc:      dc,
 		applied: map[string]metadata.Network{},
 	}
 	go c.OnChange(5, w.onChangeNoError)
@@ -35,6 +38,7 @@ func Watch(c metadata.Client) error {
 
 type watcher struct {
 	c           metadata.Client
+	dc          *client.Client
 	applied     map[string]metadata.Network
 	lastApplied time.Time
 }
@@ -51,7 +55,7 @@ func (w *watcher) onChange(version string) error {
 		return err
 	}
 
-	host, err := w.c.GetSelfHost()
+	hostUUID, err := identity.LocalHostUUID(w.c, w.dc)
 	if err != nil {
 		return err
 	}
@@ -68,7 +72,7 @@ func (w *watcher) onChange(version string) error {
 		}
 
 		for _, aContainer := range service.Containers {
-			if aContainer.HostUUID == host.UUID {
+			if aContainer.HostUUID == hostUUID {
 				localNetworks[aContainer.NetworkUUID] = true
 			}
 		}

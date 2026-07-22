@@ -9,30 +9,42 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/network-plugin-manager/conntracksync/conntrack"
+	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
+	"github.com/docker/engine-api/client"
 	"github.com/pkg/errors"
-	"github.com/rancher/go-rancher-metadata/metadata"
+	"github.com/sirupsen/logrus"
 )
 
 var (
-	reapplyEvery = 5 * time.Minute
-	natChain     = "CATTLE_NAT_POSTROUTING"
+	reapplyEvery                = 5 * time.Minute
+	staleIKEConntrackSweepEvery = 15 * time.Second
+	natChain                    = "CATTLE_NAT_POSTROUTING"
 )
 
-// Watch is used to look for changes in metadata and apply hostnat related rules
-func Watch(c metadata.Client) error {
+// Watch is used to look for changes in metadata and apply hostnat related rules.
+func Watch(c metadata.Client, dc *client.Client) error {
 	w := &watcher{
 		c:       c,
-		applied: map[string]MASQRule{},
+		dc:      dc,
+		applied: ruleSet{},
 	}
 	go c.OnChange(5, w.onChangeNoError)
 	return nil
 }
 
 type watcher struct {
-	c           metadata.Client
-	applied     map[string]MASQRule
-	lastApplied time.Time
+	c            metadata.Client
+	dc           *client.Client
+	applied      ruleSet
+	lastApplied  time.Time
+	lastIKESweep time.Time
+}
+
+type ruleSet struct {
+	MASQ map[string]MASQRule
+	IKE  map[string]IKEPortSNATRule
 }
 
 // MASQRule is used to store the needed information for building
@@ -40,6 +52,13 @@ type watcher struct {
 type MASQRule struct {
 	Subnet string
 	Bridge string
+}
+
+type IKEPortSNATRule struct {
+	SourceIP string
+	HostIP   string
+	Bridge   string
+	Port     string
 }
 
 func (p MASQRule) iptables() []byte {
@@ -62,9 +81,28 @@ func (p MASQRule) localRoutingSetting() string {
 	return s
 }
 
+func (p IKEPortSNATRule) iptables() []byte {
+	buf := &bytes.Buffer{}
+	buf.WriteString(fmt.Sprintf("-A %s -p udp -m udp -s %s/32 --sport %s", natChain, p.SourceIP, p.Port))
+	if p.Bridge != "" {
+		buf.WriteString(" ! -o ")
+		buf.WriteString(p.Bridge)
+	}
+	buf.WriteString(fmt.Sprintf(" -j SNAT --to-source %s:%s", p.HostIP, p.Port))
+	return buf.Bytes()
+}
+
 func (w *watcher) insertBaseRules() error {
-	if w.run("iptables", "-w", "-t", "nat", "-C", "POSTROUTING", "-j", natChain) != nil {
-		return w.run("iptables", "-w", "-t", "nat", "-I", "POSTROUTING", "-j", natChain)
+	var errs []string
+	for _, iptables := range iptablesCommands("iptables") {
+		if w.run(iptables, "-w", "-t", "nat", "-C", "POSTROUTING", "-j", natChain) != nil {
+			if err := w.run(iptables, "-w", "-t", "nat", "-I", "POSTROUTING", "-j", natChain); err != nil {
+				errs = append(errs, err.Error())
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Errorf("failed to insert hostnat base rules: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -85,18 +123,32 @@ func (w *watcher) onChangeNoError(version string) {
 
 func (w *watcher) onChange(version string) error {
 	logrus.Debug("Evaluating NAT host rules")
-	newRules := map[string]MASQRule{}
+	newRules := ruleSet{
+		MASQ: map[string]MASQRule{},
+		IKE:  map[string]IKEPortSNATRule{},
+	}
+
+	host, err := identity.LocalHost(w.c, w.dc)
+	if err != nil {
+		return err
+	}
 
 	networks, err := w.c.GetNetworks()
 	if err != nil {
 		return err
 	}
+	networksByUUID := map[string]metadata.Network{}
 
 	for _, network := range networks {
+		networksByUUID[network.UUID] = network
 		rule := w.networkToRule(network)
 		if rule != nil {
-			newRules[network.UUID] = *rule
+			newRules.MASQ[network.UUID] = *rule
 		}
+	}
+
+	if err := w.addIKESNATRules(host, networksByUUID, newRules.IKE); err != nil {
+		return err
 	}
 
 	logrus.Debugf("New generated nat rules: %v", newRules)
@@ -107,7 +159,48 @@ func (w *watcher) onChange(version string) error {
 		return w.apply(newRules)
 	}
 
+	w.flushStaleIKEConntrack(newRules.IKE)
+
 	logrus.Debugf("No change in applied nat rules")
+	return nil
+}
+
+func (w *watcher) addIKESNATRules(host metadata.Host, networks map[string]metadata.Network, rules map[string]IKEPortSNATRule) error {
+	if host.AgentIP == "" {
+		logrus.Warnf("hostnat: local host %s has empty agent IP, skipping IKE SNAT rules", host.UUID)
+		return nil
+	}
+
+	containers, err := w.c.GetContainers()
+	if err != nil {
+		return err
+	}
+
+	for _, container := range containers {
+		if container.HostUUID != host.UUID ||
+			container.StackName != "ipsec" ||
+			container.ServiceName != "ipsec" ||
+			container.PrimaryIp == "" ||
+			(container.State != "running" && container.State != "starting") {
+			continue
+		}
+
+		bridge := ""
+		if network, ok := networks[container.NetworkUUID]; ok {
+			bridge = bridgeForNetwork(network)
+		}
+
+		for _, port := range []string{"500", "4500"} {
+			key := container.ExternalId + "/" + port
+			rules[key] = IKEPortSNATRule{
+				SourceIP: container.PrimaryIp,
+				HostIP:   host.AgentIP,
+				Bridge:   bridge,
+				Port:     port,
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -131,8 +224,23 @@ func (w *watcher) networkToRule(network metadata.Network) *MASQRule {
 	return nil
 }
 
-func (w *watcher) enableLocalNetRouting(rules map[string]MASQRule) error {
-	for _, rule := range rules {
+func bridgeForNetwork(network metadata.Network) string {
+	conf, _ := network.Metadata["cniConfig"].(map[string]interface{})
+	for _, file := range conf {
+		props, _ := file.(map[string]interface{})
+		cniType, _ := props["type"].(string)
+		bridge, _ := props["bridge"].(string)
+
+		if cniType == "rancher-bridge" && bridge != "" {
+			return bridge
+		}
+	}
+
+	return ""
+}
+
+func (w *watcher) enableLocalNetRouting(rules ruleSet) error {
+	for _, rule := range rules.MASQ {
 		s := rule.localRoutingSetting()
 		if s != "" {
 			logrus.Debugf("s: %v", s)
@@ -147,14 +255,18 @@ func (w *watcher) enableLocalNetRouting(rules map[string]MASQRule) error {
 	return nil
 }
 
-func (w *watcher) apply(rules map[string]MASQRule) error {
+func (w *watcher) apply(rules ruleSet) error {
 	if err := w.enableLocalNetRouting(rules); err != nil {
 		return err
 	}
 
 	buf := &bytes.Buffer{}
 	buf.WriteString(fmt.Sprintf("*nat\n:%s -\n-F %s\n", natChain, natChain))
-	for _, rule := range rules {
+	for _, rule := range rules.IKE {
+		buf.WriteString("\n")
+		buf.Write(rule.iptables())
+	}
+	for _, rule := range rules.MASQ {
 		buf.WriteString("\n")
 		buf.Write(rule.iptables())
 	}
@@ -165,20 +277,130 @@ func (w *watcher) apply(rules map[string]MASQRule) error {
 		fmt.Printf("Applying rules\n%s", buf)
 	}
 
-	cmd := exec.Command("iptables-restore", "-n")
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
-	cmd.Stdin = buf
-	if err := cmd.Run(); err != nil {
-		logrus.Errorf("Failed to apply rules\n%s", buf)
-		return err
+	for _, restore := range iptablesCommands("iptables-restore") {
+		cmd := exec.Command(restore, "-n")
+		cmd.Stderr = os.Stderr
+		cmd.Stdout = os.Stdout
+		cmd.Stdin = bytes.NewReader(buf.Bytes())
+		if err := cmd.Run(); err != nil {
+			logrus.Errorf("Failed to apply rules with %s\n%s", restore, buf)
+			return err
+		}
 	}
 
 	if err := w.insertBaseRules(); err != nil {
 		return errors.Wrap(err, "Installing base rules")
 	}
 
+	if len(rules.IKE) > 0 {
+		w.flushIKEConntrack()
+		w.lastIKESweep = time.Now()
+	}
+
 	w.applied = rules
 	w.lastApplied = time.Now()
 	return nil
+}
+
+func iptablesCommands(name string) []string {
+	commands := []string{name}
+	legacyName := strings.Replace(name, "iptables", "iptables-legacy", 1)
+	if legacyName == name {
+		return commands
+	}
+	if _, err := exec.LookPath(legacyName); err != nil {
+		return commands
+	}
+	if sameCommand(name, legacyName) {
+		return commands
+	}
+	return append(commands, legacyName)
+}
+
+func sameCommand(a, b string) bool {
+	aPath, aErr := exec.LookPath(a)
+	bPath, bErr := exec.LookPath(b)
+	if aErr != nil || bErr != nil {
+		return false
+	}
+	aInfo, aErr := os.Stat(aPath)
+	bInfo, bErr := os.Stat(bPath)
+	if aErr != nil || bErr != nil {
+		return false
+	}
+	return os.SameFile(aInfo, bInfo)
+}
+
+func (w *watcher) flushIKEConntrack() {
+	for _, spec := range [][]string{
+		{"conntrack", "-D", "-p", "udp", "--sport", "500"},
+		{"conntrack", "-D", "-p", "udp", "--dport", "500"},
+		{"conntrack", "-D", "-p", "udp", "--sport", "4500"},
+		{"conntrack", "-D", "-p", "udp", "--dport", "4500"},
+	} {
+		if err := w.run(spec...); err != nil {
+			logrus.Debugf("Ignoring IKE conntrack cleanup error: %v", err)
+		}
+	}
+}
+
+func (w *watcher) flushStaleIKEConntrack(rules map[string]IKEPortSNATRule) {
+	if len(rules) == 0 || time.Since(w.lastIKESweep) < staleIKEConntrackSweepEvery {
+		return
+	}
+	w.lastIKESweep = time.Now()
+
+	entries, err := conntrack.ListSNAT()
+	if err != nil {
+		logrus.Debugf("Unable to list conntrack entries for IKE stale sweep: %v", err)
+		return
+	}
+
+	for _, entry := range entries {
+		rule, ok := matchingIKERule(entry, rules)
+		if !ok || !staleIKEEntry(entry, rule) {
+			continue
+		}
+
+		logrus.Infof("Deleting stale IKE conntrack entry: %+v", entry)
+		if err := conntrack.CTEntryDelete(entry); err != nil {
+			logrus.Debugf("Ignoring stale IKE conntrack delete error: %v", err)
+		}
+	}
+}
+
+func matchingIKERule(entry conntrack.CTEntry, rules map[string]IKEPortSNATRule) (IKEPortSNATRule, bool) {
+	if entry.Protocol != "udp" {
+		return IKEPortSNATRule{}, false
+	}
+	if !isIKEPort(entry.OriginalSourcePort) && !isIKEPort(entry.OriginalDestinationPort) &&
+		!isIKEPort(entry.ReplySourcePort) && !isIKEPort(entry.ReplyDestinationPort) {
+		return IKEPortSNATRule{}, false
+	}
+
+	for _, rule := range rules {
+		if entry.OriginalSourceIP == rule.SourceIP ||
+			entry.ReplySourceIP == rule.SourceIP ||
+			entry.OriginalDestinationIP == rule.HostIP ||
+			entry.ReplyDestinationIP == rule.HostIP {
+			return rule, true
+		}
+	}
+	return IKEPortSNATRule{}, false
+}
+
+func staleIKEEntry(entry conntrack.CTEntry, rule IKEPortSNATRule) bool {
+	if entry.Unreplied {
+		return true
+	}
+
+	if entry.OriginalSourceIP == rule.SourceIP && entry.ReplyDestinationIP != rule.HostIP {
+		return true
+	}
+
+	return false
+}
+
+func isIKEPort(port string) bool {
+	return port == "500" || port == "4500"
 }

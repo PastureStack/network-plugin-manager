@@ -10,11 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/docker/engine-api/client"
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/rancher/cniglue"
-	"github.com/rancher/go-rancher-metadata/metadata"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -79,7 +80,7 @@ func (w *Watcher) onChange(version string) error {
 		return err
 	}
 
-	host, err := w.c.GetSelfHost()
+	hostUUID, err := identity.LocalHostUUID(w.c, w.dc)
 	if err != nil {
 		return err
 	}
@@ -108,7 +109,7 @@ func (w *Watcher) onChange(version string) error {
 				"containerHostUUID":   container.HostUUID,
 				"driverLabel":         hasDriverLabel(container),
 			}).Debugf("Checking for driver binary")
-			if container.ExternalId != "" && container.HostUUID == host.UUID && hasDriverLabel(container) {
+			if container.ExternalId != "" && container.HostUUID == hostUUID && hasDriverLabel(container) {
 				binName := getBinaryName(container)
 				if binName != "" {
 					binaries[binName] = container.ExternalId
@@ -118,19 +119,33 @@ func (w *Watcher) onChange(version string) error {
 	}
 
 	if time.Now().Sub(w.lastApplied) > reapplyEvery || !reflect.DeepEqual(binaries, w.applied) {
-		return w.apply(host, binaries)
+		return w.apply(binaries)
 	}
 
 	return nil
 }
 
-func (w *Watcher) apply(host metadata.Host, binaries map[string]string) error {
+func (w *Watcher) apply(binaries map[string]string) error {
 	if !reflect.DeepEqual(binaries, w.applied) {
 		logrus.Infof("Setting up binaries for: %v", binaries)
 	}
 
 	script := `#!/bin/sh
-exec /usr/bin/nsenter -m -u -i -n -p -t %d -- $0 "$@"
+target="%s"
+service_label="%s"
+cid=""
+if [ -n "${service_label}" ]; then
+    cid="$(docker ps -q --filter "label=io.rancher.stack_service.name=${service_label}" | head -n 1)"
+fi
+if [ -z "${cid}" ]; then
+    cid="${target}"
+fi
+pid="$(docker inspect -f '{{.State.Pid}}' "${cid}" 2>/dev/null || true)"
+if [ -z "${pid}" ] || [ "${pid}" = "0" ]; then
+    echo "{\"code\":100,\"msg\":\"cni driver container not running: ${service_label:-${target}}\"}" >&2
+    exit 1
+fi
+exec /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- $0 "$@"
 `
 
 	os.MkdirAll(binDir, 0700)
@@ -148,9 +163,14 @@ exec /usr/bin/nsenter -m -u -i -n -p -t %d -- $0 "$@"
 			break
 		}
 
+		serviceLabel := ""
+		if container.Config != nil && container.Config.Labels != nil {
+			serviceLabel = container.Config.Labels["io.rancher.stack_service.name"]
+		}
+
 		ptmp := filepath.Join(binDir, name+".tmp")
 		p := filepath.Join(binDir, name)
-		content := []byte(fmt.Sprintf(script, container.State.Pid))
+		content := []byte(fmt.Sprintf(script, target, serviceLabel))
 		logrus.Debugf("Writing %s:\n%s", p, content)
 		if err := ioutil.WriteFile(ptmp, content, 0700); err != nil {
 			lastErr = err

@@ -1,24 +1,38 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-source $(dirname $0)/version
+source "$(dirname "$0")/version"
 
 ARCH=${ARCH:?"ARCH not set"}
 SUFFIX=""
-[ "${ARCH}" != "amd64" ] && SUFFIX="_${ARCH}"
+[ "$ARCH" != "amd64" ] && SUFFIX="_${ARCH}"
 
-cd $(dirname $0)/../package
+cd "$(dirname "$0")/.."
+mkdir -p dist
 
 TAG=${TAG:-${IMAGE_VERSION}${SUFFIX}}
-REPO=${REPO:-rancher}
+REPO=${REPO:-ghcr.io/${IMAGE_NAMESPACE:-pasturestack}}
+IMAGE=${REPO}/network-plugin-manager:${TAG}
+IMAGE_REVISION=${IMAGE_REVISION:-$(git rev-parse HEAD)}
+IMAGE_CREATED=${IMAGE_CREATED:-$(git show -s --format=%cI HEAD)}
+SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}
+UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT:-20260722T164940Z}
+IMAGE_ARCHIVE=$(mktemp "${TMPDIR:-/tmp}/network-plugin-manager-image.XXXXXX.tar")
+trap 'rm -f "${IMAGE_ARCHIVE}"' EXIT
 
-if [ ! -e ../bin/plugin-manager ]; then
-    ../scripts/build
-fi
+./scripts/build
 
-cp ../bin/plugin-manager .
-
-IMAGE=${REPO}/network-manager:${TAG}
-docker build -t ${IMAGE} .
-echo ${IMAGE} > ../dist/images
-echo Built ${IMAGE}
+docker buildx build \
+    --provenance=false \
+    --network "${DOCKER_BUILD_NETWORK:-host}" \
+    --build-arg IMAGE_VERSION="${TAG}" \
+    --build-arg IMAGE_REVISION="${IMAGE_REVISION}" \
+    --build-arg IMAGE_CREATED="${IMAGE_CREATED}" \
+    --build-arg SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
+    --build-arg UBUNTU_SNAPSHOT="${UBUNTU_SNAPSHOT}" \
+    --output "type=docker,dest=${IMAGE_ARCHIVE},name=${IMAGE},rewrite-timestamp=true,compatibility-version=20" \
+    -f package/Dockerfile \
+    .
+docker load --input "${IMAGE_ARCHIVE}" >/dev/null
+printf '%s\n' "${IMAGE}" > dist/images
+printf 'Built %s\n' "${IMAGE}"

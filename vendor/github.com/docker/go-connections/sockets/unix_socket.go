@@ -1,3 +1,4 @@
+//go:build linux || freebsd || solaris
 // +build linux freebsd solaris
 
 package sockets
@@ -9,8 +10,8 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/opencontainers/runc/libcontainer/user"
+	"github.com/sirupsen/logrus"
 )
 
 // NewUnixSocket creates a unix socket with the specified path and group.

@@ -3,3 +3,6 @@
 /dist
 *.swp
 /.trash-cache
+/package/plugin-manager
+/package/LICENSE
+/package/UNOFFICIAL_MAINTENANCE_FORK.md

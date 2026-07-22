@@ -8,9 +8,9 @@ import (
 	"path"
 	"sync"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/engine-api/client"
 	"github.com/docker/engine-api/types"
+	"github.com/sirupsen/logrus"
 )
 
 type state struct {
@@ -93,7 +93,7 @@ func (s *state) writeState(id, startedAt string, state interface{}) {
 		return
 	}
 
-	if err := os.MkdirAll(dir, 0644); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil {
 		logrus.Warnf("Problem creating network state dir for %v: %v", filename, err)
 		return
 	}

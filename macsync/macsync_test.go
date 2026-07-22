@@ -3,9 +3,9 @@ package macsync
 import (
 	"testing"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/docker/engine-api/client"
-	"github.com/rancher/go-rancher-metadata/metadata"
+	"github.com/sirupsen/logrus"
 )
 
 // Some of the tests can run only when in development,

@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+
+ca_root="${PLATFORM_CA_ROOT:-/var/lib/pasturestack/etc/ssl/ca.crt}"
+legacy_ca_root="/var/lib/rancher/etc/ssl/ca.crt"
+target="/usr/local/share/ca-certificates/pasturestack/platform-ca.crt"
+
+if [ ! -f "$ca_root" ] && [ -f "$legacy_ca_root" ]; then
+    ca_root="$legacy_ca_root"
+fi
+
+if [ -f "$ca_root" ]; then
+    install -D -m 0644 "$ca_root" "$target"
+    update-ca-certificates >/dev/null
+    echo "Platform CA certificate installed."
+fi

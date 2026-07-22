@@ -1,6 +1,7 @@
 // Package tlsconfig provides primitives to retrieve secure-enough TLS configurations for both clients and servers.
 //
 // As a reminder from https://golang.org/pkg/crypto/tls/#Config:
+//
 //	A Config structure is used to configure a TLS client or server. After one has been passed to a TLS function it must not be modified.
 //	A Config may be reused; the tls package will also not modify it.
 package tlsconfig
@@ -12,7 +13,7 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/Sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
 // Options represents the information needed to create client and server TLS configurations.
