@@ -1,0 +1,15 @@
+name: PastureStack / Repository integrity
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    uses: PastureStack/.github/.github/workflows/repository-integrity.yml@main
