@@ -201,7 +201,7 @@ require_fixed .github/workflows/repository-integrity.yml 'uses: PastureStack/.gi
 require_pattern .github/workflows/supply-chain.yml '^[[:space:]]+pull_request:' "supply_chain_pr_trigger_missing"
 require_pattern .github/workflows/supply-chain.yml '^[[:space:]]+push:' "supply_chain_main_trigger_missing"
 require_pattern .github/workflows/supply-chain.yml 'retention-days:[[:space:]]+30' "supply_chain_evidence_retention_not_30_days"
-require_fixed .github/workflows/supply-chain.yml 'aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c' "trivy_image_not_digest_pinned"
+require_fixed .github/workflows/supply-chain.yml 'aquasec/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969' "trivy_image_not_digest_pinned"
 require_fixed .github/workflows/supply-chain.yml 'docker builder prune --all --force' "uncached_reproducibility_rebuild_missing"
 require_fixed .github/workflows/supply-chain.yml 'test "$first_image_id" = "$second_image_id"' "runtime_image_reproducibility_gate_missing"
 require_fixed .github/workflows/supply-chain.yml '/evidence/dapper.cdx.json' "dapper_sbom_missing"
