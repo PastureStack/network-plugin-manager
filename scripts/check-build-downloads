@@ -72,6 +72,15 @@ reject_apt_version_pins() {
 bash -n scripts/build scripts/ci scripts/package scripts/validate scripts/version \
     package/start.sh package/platform-entrypoint.sh package/update-platform-ca
 
+(
+    unset VERSION_OVERRIDE RELEASE_VERSION DIRTY ARCH
+    set -u
+    source scripts/version
+    test -n "$VERSION"
+    test -n "$IMAGE_VERSION"
+    test "$ARCH" = amd64
+)
+
 if ! awk -F '\t' '
     NR == 1 {
         if ($1 != "key" || $2 != "value" || NF != 2) {
