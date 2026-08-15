@@ -26,13 +26,92 @@ reject_pattern() {
     fi
 }
 
+require_fixed() {
+    local file="$1"
+    local value="$2"
+    local label="$3"
+    grep -Fq -- "$value" "$file" || fail "$label"
+}
+
+lock_value() {
+    local key="$1"
+    awk -F '\t' -v key="$key" '$1 == key { print $2 }' build-inputs.lock.tsv
+}
+
+require_lock_value() {
+    local key="$1"
+    local expected="$2"
+    local actual
+    actual="$(lock_value "$key")"
+    if [ "$actual" != "$expected" ]; then
+        fail "build_input_lock_${key}_unexpected"
+    fi
+}
+
+reject_apt_version_pins() {
+    local file="$1"
+    if awk '
+        /apt-get install -y --no-install-recommends/ {
+            in_install = 1
+            next
+        }
+        in_install && /^[[:space:]]*"?[[:alnum:]][[:alnum:].+-]*=/ {
+            found = 1
+        }
+        in_install && /(&&|;)[[:space:]]*\\$/ {
+            in_install = 0
+        }
+        END {
+            exit found ? 0 : 1
+        }
+    ' "$file"; then
+        fail "${file}_fragile_apt_version_pin_present"
+    fi
+}
+
 bash -n scripts/build scripts/ci scripts/package scripts/validate scripts/version \
     package/start.sh package/platform-entrypoint.sh package/update-platform-ca
 
+if ! awk -F '\t' '
+    NR == 1 {
+        if ($1 != "key" || $2 != "value" || NF != 2) {
+            exit 1
+        }
+        next
+    }
+    NF != 2 || $1 !~ /^[a-z0-9_]+$/ || $2 == "" || seen[$1]++ {
+        exit 1
+    }
+    END {
+        if (NR < 2) {
+            exit 1
+        }
+    }
+' build-inputs.lock.tsv; then
+    fail "build_input_lock_invalid_tsv"
+fi
+
+require_lock_value schema 'pasturestack.build-inputs/v1'
+require_lock_value ubuntu_image 'ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb'
+require_lock_value ubuntu_snapshot '20260722T164940Z'
+require_lock_value ubuntu_snapshot_base 'https://snapshot.ubuntu.com/ubuntu'
+require_lock_value ubuntu_snapshot_uri 'https://snapshot.ubuntu.com/ubuntu/20260722T164940Z'
+require_lock_value ca_certificates_deb_uri 'https://snapshot.ubuntu.com/ubuntu/20260722T164940Z/pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb'
+require_lock_value ca_certificates_deb_sha256 '6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90'
+require_lock_value go_version '1.26.6'
+require_lock_value go_linux_amd64_sha256 '708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89'
+require_lock_value go_linux_arm64_sha256 'd0507e9e9d7fe012aae570108cbd76c15de879e17130ab8cb90d4d7445cb1f2e'
+require_lock_value docker_version '29.6.2'
+require_lock_value docker_linux_amd64_sha256 'd6204aea92238e2453d5445c885b9d2e5eb8f82915568ec50edf9dbe12a3ac74'
+require_lock_value docker_linux_arm64_sha256 '8d16d8b3b158c132a9fb9963d4b4345746f925e287e154c9ed880ac257baf292'
+require_lock_value buildx_version '0.34.1'
+require_lock_value buildx_linux_amd64_sha256 'f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b'
+require_lock_value buildx_linux_arm64_sha256 'c34e32dd6ea2653d960d6c099c9f09b9077e4a37504d2d31e5066eccc3904231'
+
 require_pattern Dockerfile.dapper 'FROM ubuntu:26\.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb' "dapper_base_not_pinned"
-require_pattern Dockerfile.dapper 'ARG GO_VERSION=1\.26\.5' "go_version_not_current"
-require_pattern Dockerfile.dapper 'GO_LINUX_AMD64_SHA256=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053' "go_amd64_sha_not_current"
-require_pattern Dockerfile.dapper 'GO_LINUX_ARM64_SHA256=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49' "go_arm64_sha_not_current"
+require_pattern Dockerfile.dapper 'ARG GO_VERSION=1\.26\.6' "go_version_not_current"
+require_pattern Dockerfile.dapper 'GO_LINUX_AMD64_SHA256=708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89' "go_amd64_sha_not_current"
+require_pattern Dockerfile.dapper 'GO_LINUX_ARM64_SHA256=d0507e9e9d7fe012aae570108cbd76c15de879e17130ab8cb90d4d7445cb1f2e' "go_arm64_sha_not_current"
 require_pattern Dockerfile.dapper 'ARG DOCKER_VERSION=29\.6\.2' "dapper_docker_version_not_current"
 require_pattern Dockerfile.dapper 'DOCKER_LINUX_AMD64_SHA256=d6204aea92238e2453d5445c885b9d2e5eb8f82915568ec50edf9dbe12a3ac74' "dapper_docker_amd64_sha_not_current"
 require_pattern Dockerfile.dapper 'DOCKER_LINUX_ARM64_SHA256=8d16d8b3b158c132a9fb9963d4b4345746f925e287e154c9ed880ac257baf292' "dapper_docker_arm64_sha_not_current"
@@ -45,11 +124,32 @@ require_pattern Dockerfile.dapper 'BUILDX_LINUX_ARM64_SHA256=c34e32dd6ea2653d960
 require_pattern Makefile 'DOCKER_VERSION \?= 29\.6\.2' "makefile_docker_version_not_current"
 require_pattern Makefile 'BUILDX_VERSION \?= 0\.34\.1' "makefile_buildx_version_not_current"
 require_pattern Makefile 'UBUNTU_SNAPSHOT \?= 20260722T164940Z' "makefile_ubuntu_snapshot_not_pinned"
-require_pattern Makefile 'DAPPER_IMAGE \?= pasturestack-network-plugin-manager-dapper:go1\.26\.5-docker29\.6\.2-buildx0\.34\.1' "dapper_image_identity_not_pinned"
+require_pattern Makefile 'DAPPER_IMAGE \?= pasturestack-network-plugin-manager-dapper:go1\.26\.6-docker29\.6\.2-buildx0\.34\.1' "dapper_image_identity_not_pinned"
 require_pattern Dockerfile.dapper 'curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 300[[:space:]]+\\' "dapper_curl_not_bounded"
 require_pattern Dockerfile.dapper '-o /tmp/go\.tgz "https://go\.dev/dl/go\$\{GO_VERSION\}\.linux-\$\{go_arch\}\.tar\.gz"' "go_download_not_file_backed"
 require_pattern Dockerfile.dapper '-o /tmp/docker\.tgz "https://download\.docker\.com/linux/static/stable/\$\{docker_arch\}/docker-\$\{DOCKER_VERSION\}\.tgz"' "dapper_docker_download_not_file_backed"
 reject_pattern Dockerfile.dapper 'curl[^|]*\|[[:space:]]*tar' "legacy_pipe_to_tar_download"
+require_fixed Dockerfile.dapper 'COPY build-inputs.lock.tsv /usr/share/pasturestack/manifests/build-inputs.lock.tsv' "dapper_build_input_lock_not_embedded"
+require_fixed Dockerfile.dapper '/usr/share/pasturestack/manifests/dapper-ubuntu-packages.tsv' "dapper_dpkg_manifest_missing"
+require_fixed Dockerfile.dapper '/usr/share/pasturestack/manifests/dapper-toolchain.tsv' "dapper_toolchain_manifest_missing"
+require_fixed Dockerfile.dapper "FROM $(lock_value ubuntu_image)" "dapper_ubuntu_image_lock_mismatch"
+require_fixed Dockerfile.dapper "ADD --checksum=sha256:$(lock_value ca_certificates_deb_sha256)" "dapper_ca_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "    $(lock_value ca_certificates_deb_uri) \\" "dapper_ca_uri_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG GO_VERSION=$(lock_value go_version)" "dapper_go_version_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG GO_LINUX_AMD64_SHA256=$(lock_value go_linux_amd64_sha256)" "dapper_go_amd64_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG GO_LINUX_ARM64_SHA256=$(lock_value go_linux_arm64_sha256)" "dapper_go_arm64_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG DOCKER_VERSION=$(lock_value docker_version)" "dapper_docker_version_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG DOCKER_LINUX_AMD64_SHA256=$(lock_value docker_linux_amd64_sha256)" "dapper_docker_amd64_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG DOCKER_LINUX_ARM64_SHA256=$(lock_value docker_linux_arm64_sha256)" "dapper_docker_arm64_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG BUILDX_VERSION=$(lock_value buildx_version)" "dapper_buildx_version_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG BUILDX_LINUX_AMD64_SHA256=$(lock_value buildx_linux_amd64_sha256)" "dapper_buildx_amd64_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG BUILDX_LINUX_ARM64_SHA256=$(lock_value buildx_linux_arm64_sha256)" "dapper_buildx_arm64_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG UBUNTU_SNAPSHOT=$(lock_value ubuntu_snapshot)" "dapper_ubuntu_snapshot_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG UBUNTU_SNAPSHOT_BASE=$(lock_value ubuntu_snapshot_base)" "dapper_ubuntu_snapshot_base_lock_mismatch"
+require_fixed Dockerfile.dapper 'test "${GO_VERSION}" = "$(awk' "dapper_go_lock_not_enforced_at_build"
+require_fixed Dockerfile.dapper 'test "${DOCKER_VERSION}" = "$(awk' "dapper_docker_lock_not_enforced_at_build"
+require_fixed Dockerfile.dapper 'test "${BUILDX_VERSION}" = "$(awk' "dapper_buildx_lock_not_enforced_at_build"
+reject_apt_version_pins Dockerfile.dapper
 
 require_pattern package/Dockerfile 'FROM ubuntu:26\.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb' "runtime_base_not_pinned"
 require_pattern package/Dockerfile 'ARG DOCKER_VERSION=29\.6\.2' "package_docker_version_not_current"
@@ -75,10 +175,41 @@ require_pattern package/update-platform-ca 'legacy_ca_root="/var/lib/rancher/etc
 reject_pattern package/update-platform-ca 'curl[[:space:]]' "unexpected_ca_network_fetch"
 reject_pattern package/Dockerfile 'gmail\.com|users\.noreply\.github\.com|C:\\Users|/Users/' "personal_marker_in_runtime_image"
 require_pattern .dockerignore '^!bin/network-plugin-manager$' "verified_binary_excluded_from_build_context"
+require_fixed package/Dockerfile 'COPY build-inputs.lock.tsv /usr/share/pasturestack/manifests/build-inputs.lock.tsv' "runtime_build_input_lock_not_embedded"
+require_fixed package/Dockerfile '/usr/share/pasturestack/manifests/runtime-ubuntu-packages.tsv' "runtime_dpkg_manifest_missing"
+require_fixed package/Dockerfile '/usr/share/pasturestack/manifests/runtime-toolchain.tsv' "runtime_toolchain_manifest_missing"
+require_fixed package/Dockerfile "FROM $(lock_value ubuntu_image)" "runtime_ubuntu_image_lock_mismatch"
+require_fixed package/Dockerfile "ADD --checksum=sha256:$(lock_value ca_certificates_deb_sha256)" "runtime_ca_digest_lock_mismatch"
+require_fixed package/Dockerfile "    $(lock_value ca_certificates_deb_uri) \\" "runtime_ca_uri_lock_mismatch"
+require_fixed package/Dockerfile "ARG DOCKER_VERSION=$(lock_value docker_version)" "runtime_docker_version_lock_mismatch"
+require_fixed package/Dockerfile "ARG DOCKER_LINUX_AMD64_SHA256=$(lock_value docker_linux_amd64_sha256)" "runtime_docker_digest_lock_mismatch"
+require_fixed package/Dockerfile "ARG UBUNTU_SNAPSHOT=$(lock_value ubuntu_snapshot)" "runtime_ubuntu_snapshot_lock_mismatch"
+require_fixed package/Dockerfile "ARG UBUNTU_SNAPSHOT_BASE=$(lock_value ubuntu_snapshot_base)" "runtime_ubuntu_snapshot_base_lock_mismatch"
+require_fixed package/Dockerfile 'test "${DOCKER_VERSION}" = "$(awk' "runtime_docker_lock_not_enforced_at_build"
+reject_apt_version_pins package/Dockerfile
+
+require_fixed .github/workflows/repository-integrity.yml 'uses: PastureStack/.github/.github/workflows/repository-integrity.yml@86986b855e3cde8bab6b5221407417365ef138a4' "repository_integrity_workflow_not_commit_pinned"
+require_pattern .github/workflows/supply-chain.yml '^[[:space:]]+pull_request:' "supply_chain_pr_trigger_missing"
+require_pattern .github/workflows/supply-chain.yml '^[[:space:]]+push:' "supply_chain_main_trigger_missing"
+require_pattern .github/workflows/supply-chain.yml 'retention-days:[[:space:]]+30' "supply_chain_evidence_retention_not_30_days"
+require_fixed .github/workflows/supply-chain.yml 'aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c' "trivy_image_not_digest_pinned"
+require_fixed .github/workflows/supply-chain.yml 'docker builder prune --all --force' "uncached_reproducibility_rebuild_missing"
+require_fixed .github/workflows/supply-chain.yml 'test "$first_image_id" = "$second_image_id"' "runtime_image_reproducibility_gate_missing"
+require_fixed .github/workflows/supply-chain.yml '/evidence/dapper.cdx.json' "dapper_sbom_missing"
+require_fixed .github/workflows/supply-chain.yml '/evidence/runtime.cdx.json' "runtime_sbom_missing"
+require_fixed .github/workflows/supply-chain.yml 'test "$high" -eq 0' "trivy_high_gate_missing"
+reject_pattern .github/workflows/supply-chain.yml 'docker[[:space:]]+push|push:[[:space:]]+true|gh[[:space:]]+release|docker/login-action' "supply_chain_workflow_can_publish"
+
+while IFS= read -r workflow; do
+    if grep -E '^[[:space:]]*uses:' "$workflow" \
+        | grep -Ev '@[0-9a-f]{40}([[:space:]]*(#.*)?)?$'; then
+        fail "workflow_action_not_commit_pinned:${workflow}"
+    fi
+done < <(find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print | LC_ALL=C sort)
 
 echo "failure_count=${failures}"
 if [ "$failures" -ne 0 ]; then
     exit 1
 fi
 
-echo "NETWORK_PLUGIN_MANAGER_BUILD_POLICY_OK go=1.26.5 docker=29.6.2 buildx=0.34.1 pinned_base=1 pinned_apt_snapshot=1 reproducible_export=1 verified_downloads=1 oci_provenance=1 ca_fetch=local_only"
+echo "NETWORK_PLUGIN_MANAGER_BUILD_POLICY_OK go=1.26.6 docker=29.6.2 buildx=0.34.1 pinned_base=1 pinned_apt_snapshot=1 machine_readable_lock=1 dpkg_manifests=2 toolchain_manifests=2 reproducible_export=1 verified_downloads=1 sbom_trivy_gate=1 oci_provenance=1 ca_fetch=local_only"

@@ -11,4 +11,9 @@ echo Running: go vet
 go vet ${PACKAGES}
 printf "%s\n" "Running supported validation: go vet and gofmt."
 echo Running: gofmt
-test -z "$(find . -name '*.go' | grep -v -e ./.git -e ./vendor | xargs gofmt -l -s | tee /dev/stderr)"
+unformatted="$(find . -name '*.go' -not -path './.git/*' -not -path './vendor/*' -print0 \
+    | xargs -0 -r gofmt -l -s)"
+if [ -n "$unformatted" ]; then
+    printf '%s\n' "$unformatted" >&2
+    exit 1
+fi

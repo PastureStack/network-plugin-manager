@@ -8,6 +8,7 @@ RUN dpkg-deb -x /tmp/ca-certificates.deb /tmp/ca-certificates && \
 
 FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb
 COPY --from=snapshot-ca-bootstrap /snapshot-ca.crt /etc/ssl/certs/ca-certificates.crt
+COPY build-inputs.lock.tsv /usr/share/pasturestack/manifests/build-inputs.lock.tsv
 
 RUN rm -f /usr/bin/pebble
 
@@ -21,11 +22,16 @@ ARG UBUNTU_SNAPSHOT=20260722T164940Z
 ARG UBUNTU_SNAPSHOT_BASE=https://snapshot.ubuntu.com/ubuntu
 
 RUN set -eux; \
+    locked_snapshot="$(awk -F '\t' '$1 == "ubuntu_snapshot" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    locked_snapshot_base="$(awk -F '\t' '$1 == "ubuntu_snapshot_base" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${UBUNTU_SNAPSHOT}" = "${locked_snapshot}"; \
+    test "${UBUNTU_SNAPSHOT_BASE}" = "${locked_snapshot_base}"; \
     snapshot_uri="${UBUNTU_SNAPSHOT_BASE%/}/${UBUNTU_SNAPSHOT}"; \
-    find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i \
-        -e "s|http://security.ubuntu.com/ubuntu|${snapshot_uri}|g" \
-        -e "s|http://archive.ubuntu.com/ubuntu|${snapshot_uri}|g" {} +; \
-    printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";\nAcquire::http::Pipeline-Depth "0";\n' > /etc/apt/apt.conf.d/80pasturestack-retries; \
+    test "${snapshot_uri}" = "$(awk -F '\t' '$1 == "ubuntu_snapshot_uri" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; \
+    printf 'Types: deb\nURIs: %s\nSuites: resolute resolute-updates resolute-backports resolute-security\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\nSnapshot: no\n' \
+        "${snapshot_uri}" > /etc/apt/sources.list.d/pasturestack-snapshot.sources; \
+    printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";\nAcquire::https::Verify-Peer "true";\nAcquire::https::Verify-Host "true";\nAcquire::http::Pipeline-Depth "0";\nAcquire::AllowInsecureRepositories "false";\nAPT::Get::AllowUnauthenticated "false";\n' > /etc/apt/apt.conf.d/80pasturestack-retries; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         bash \
@@ -41,12 +47,25 @@ RUN set -eux; \
         psmisc \
         tar \
         util-linux; \
+    test "${DOCKER_VERSION}" = "$(awk -F '\t' '$1 == "docker_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${DOCKER_LINUX_AMD64_SHA256}" = "$(awk -F '\t' '$1 == "docker_linux_amd64_sha256" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
     curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 300 \
         -o /tmp/docker.tgz "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz"; \
     echo "${DOCKER_LINUX_AMD64_SHA256}  /tmp/docker.tgz" | sha256sum -c -; \
     tar xzf /tmp/docker.tgz -C /usr/bin --strip-components=1 docker/docker; \
     chmod +x /usr/bin/docker; \
     rm -f /tmp/docker.tgz; \
+    docker_installed_sha="$(sha256sum /usr/bin/docker | awk '{ print $1 }')"; \
+    { \
+        printf 'component\tdeclared_version\ttarget\tinstalled_sha256\tinstalled_version\n'; \
+        printf 'docker\t%s\tlinux-amd64\t%s\t%s\n' "${DOCKER_VERSION}" "${docker_installed_sha}" "$(docker --version)"; \
+    } > /usr/share/pasturestack/manifests/runtime-toolchain.tsv; \
+    { \
+        printf 'record\tname\tarchitecture\tversion\n'; \
+        printf 'metadata\tschema\t-\tpasturestack.dpkg-manifest/v1\n'; \
+        printf 'metadata\tubuntu_snapshot\t-\t%s\n' "${UBUNTU_SNAPSHOT}"; \
+        dpkg-query -W -f='package\t${binary:Package}\t${Architecture}\t${Version}\n' | LC_ALL=C sort; \
+    } > /usr/share/pasturestack/manifests/runtime-ubuntu-packages.tsv; \
     ln -s / /mnt/sda1; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     rm -f /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache

@@ -20,7 +20,7 @@ The primary executable is `network-plugin-manager`. Its default metadata endpoin
 
 ## Build and test
 
-The reviewed build uses Go 1.26.5, Docker CLI 29.6.2, and Docker Buildx 0.34.1. Downloaded tools are checked against fixed SHA-256 values. The Ubuntu base image is digest-pinned, package installation uses the fixed `20260722T164940Z` Ubuntu archive snapshot, and the image exporter normalizes file timestamps to the source commit time.
+The reviewed build uses Go 1.26.6, Docker CLI 29.6.2, and Docker Buildx 0.34.1. Downloaded tools are checked against fixed SHA-256 values. The Ubuntu base image is digest-pinned, package installation uses the fixed `20260722T164940Z` Ubuntu archive snapshot, and the image exporter normalizes file timestamps to the source commit time.
 
 ```bash
 make test
@@ -29,7 +29,11 @@ bash scripts/check-build-downloads
 VERSION_OVERRIDE=v0.6.34 IMAGE_NAMESPACE=pasturestack make package
 ```
 
-No CI/CD workflow is enabled during the migration and system-integration phase.
+Pull requests and `main` run a non-publishing supply-chain workflow. It rebuilds
+the runtime image without cache, compares the resulting binary and image
+digests, verifies the embedded build-input, toolchain, and resolved `dpkg`
+manifests, and generates CycloneDX and Trivy evidence retained for 30 days.
+Publishing remains a separate, explicitly authorized operation.
 
 ## Compatibility and security
 

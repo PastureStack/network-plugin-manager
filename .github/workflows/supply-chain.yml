@@ -1,0 +1,277 @@
+name: PastureStack / Build, test, and supply-chain evidence
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: network-plugin-manager-supply-chain-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build, test, SBOM, and Trivy gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      DAPPER_IMAGE: local/network-plugin-manager-dapper:${{ github.sha }}
+      TRIVY_IMAGE: aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+
+    steps:
+      - name: Check out candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record immutable source inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-revision.txt
+          sha256sum \
+            build-inputs.lock.tsv \
+            Dockerfile.dapper \
+            Makefile \
+            package/Dockerfile \
+            scripts/build \
+            scripts/ci \
+            scripts/package \
+            scripts/check-build-downloads \
+            scripts/test \
+            scripts/validate \
+            .github/workflows/supply-chain.yml \
+            > evidence/source-inputs.sha256
+          docker version > evidence/runner-docker-version.txt
+          bash ./scripts/check-build-downloads | tee evidence/build-policy.txt
+
+      - name: Build, test, validate, package, and prove reproducibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          make ci DAPPER_IMAGE="$DAPPER_IMAGE"
+          runtime_image="$(cat dist/images)"
+          first_image_id="$(docker image inspect --format '{{.Id}}' "$runtime_image")"
+          printf '%s\n' "$runtime_image" > evidence/runtime-image.txt
+          printf '%s\n' "$first_image_id" > evidence/runtime-image-first-id.txt
+          sha256sum bin/network-plugin-manager \
+            > evidence/network-plugin-manager-first.sha256
+
+          docker image rm "$runtime_image" "$DAPPER_IMAGE" >/dev/null
+          rm -rf bin dist
+          docker builder prune --all --force >/dev/null
+
+          make ci DAPPER_IMAGE="$DAPPER_IMAGE"
+          test "$(cat dist/images)" = "$runtime_image"
+          second_image_id="$(docker image inspect --format '{{.Id}}' "$runtime_image")"
+          printf '%s\n' "$second_image_id" > evidence/runtime-image-second-id.txt
+          test "$first_image_id" = "$second_image_id"
+          sha256sum bin/network-plugin-manager \
+            > evidence/network-plugin-manager-second.sha256
+          diff -u \
+            evidence/network-plugin-manager-first.sha256 \
+            evidence/network-plugin-manager-second.sha256
+          test -z "$(git status --porcelain --untracked-files=no)"
+          printf 'RUNTIME_IMAGE=%s\n' "$runtime_image" >> "$GITHUB_ENV"
+
+      - name: Verify resolved package and toolchain manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot="$(awk -F '\t' '$1 == "ubuntu_snapshot" { print $2 }' build-inputs.lock.tsv)"
+
+          verify_image_manifest() {
+            local image="$1"
+            local prefix="$2"
+            local manifest_path="$3"
+            local toolchain_path="$4"
+
+            docker inspect "$image" > "evidence/${prefix}-image-inspect.json"
+            docker run --rm --entrypoint cat "$image" \
+              /usr/share/pasturestack/manifests/build-inputs.lock.tsv \
+              > "evidence/${prefix}-build-inputs.lock.tsv"
+            diff -u build-inputs.lock.tsv \
+              "evidence/${prefix}-build-inputs.lock.tsv"
+
+            docker run --rm --entrypoint cat "$image" "$manifest_path" \
+              > "evidence/${prefix}-dpkg.tsv"
+            {
+              printf 'record\tname\tarchitecture\tversion\n'
+              printf 'metadata\tschema\t-\tpasturestack.dpkg-manifest/v1\n'
+              printf 'metadata\tubuntu_snapshot\t-\t%s\n' "$snapshot"
+              docker run --rm --entrypoint dpkg-query "$image" \
+                -W "-f=package\t\${binary:Package}\t\${Architecture}\t\${Version}\n" \
+                | LC_ALL=C sort
+            } > "evidence/${prefix}-dpkg-live.tsv"
+            diff -u "evidence/${prefix}-dpkg.tsv" \
+              "evidence/${prefix}-dpkg-live.tsv"
+            grep -F $'metadata\tubuntu_snapshot\t-\t'"$snapshot" \
+              "evidence/${prefix}-dpkg.tsv" >/dev/null
+            test "$(grep -c '^package' "evidence/${prefix}-dpkg.tsv")" -gt 0
+
+            docker run --rm --entrypoint cat "$image" "$toolchain_path" \
+              > "evidence/${prefix}-toolchain.tsv"
+            awk -F '\t' '
+              NR == 1 {
+                if ($0 != "component\tdeclared_version\ttarget\tinstalled_sha256\tinstalled_version") {
+                  exit 1
+                }
+                next
+              }
+              $4 !~ /^[0-9a-f]+$/ || length($4) != 64 || $5 == "" {
+                exit 1
+              }
+              END {
+                if (NR < 2) {
+                  exit 1
+                }
+              }
+            ' "evidence/${prefix}-toolchain.tsv"
+          }
+
+          verify_image_manifest \
+            "$DAPPER_IMAGE" \
+            dapper \
+            /usr/share/pasturestack/manifests/dapper-ubuntu-packages.tsv \
+            /usr/share/pasturestack/manifests/dapper-toolchain.tsv
+          verify_image_manifest \
+            "$RUNTIME_IMAGE" \
+            runtime \
+            /usr/share/pasturestack/manifests/runtime-ubuntu-packages.tsv \
+            /usr/share/pasturestack/manifests/runtime-toolchain.tsv
+
+          go_version="$(awk -F '\t' '$1 == "go_version" { print $2 }' build-inputs.lock.tsv)"
+          docker_version="$(awk -F '\t' '$1 == "docker_version" { print $2 }' build-inputs.lock.tsv)"
+          buildx_version="$(awk -F '\t' '$1 == "buildx_version" { print $2 }' build-inputs.lock.tsv)"
+          grep -F $'go\t'"$go_version"$'\tlinux-amd64\t' evidence/dapper-toolchain.tsv >/dev/null
+          grep -F $'docker\t'"$docker_version"$'\tlinux-amd64\t' evidence/dapper-toolchain.tsv >/dev/null
+          grep -F $'buildx\t'"$buildx_version"$'\tlinux-amd64\t' evidence/dapper-toolchain.tsv >/dev/null
+          grep -F $'docker\t'"$docker_version"$'\tlinux-amd64\t' evidence/runtime-toolchain.tsv >/dev/null
+          docker run --rm --entrypoint go \
+            --volume "$PWD:/work:ro" "$DAPPER_IMAGE" \
+            version -m /work/bin/network-plugin-manager \
+            > evidence/network-plugin-manager-go-version.txt
+
+      - name: Generate SBOMs and Trivy reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$TRIVY_IMAGE"
+          docker inspect "$TRIVY_IMAGE" > evidence/trivy-image-inspect.json
+          docker run --rm "$TRIVY_IMAGE" --version > evidence/trivy-version.txt
+          trivy_cache="$RUNNER_TEMP/trivy-cache"
+          source_tree="$(mktemp -d)"
+          cleanup_scan() {
+            rm -rf "$source_tree"
+          }
+          trap cleanup_scan EXIT
+          mkdir -p "$trivy_cache"
+          git archive --format=tar HEAD | tar -xf - -C "$source_tree"
+
+          docker run --rm \
+            --volume "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image --download-db-only
+          (
+            cd "$trivy_cache"
+            find . -type f -print0 | LC_ALL=C sort -z \
+              | xargs -0 -r sha256sum
+          ) > evidence/trivy-database.sha256
+
+          docker run --rm \
+            --volume "$source_tree:/scan:ro" \
+            --volume "$PWD/evidence:/evidence" \
+            --volume "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" fs \
+            --skip-db-update --offline-scan --scanners vuln,secret \
+            --format json --output /evidence/source-security.json /scan
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/evidence:/evidence" \
+            --volume "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+            --skip-db-update --offline-scan --scanners vuln,secret \
+            --format json --output /evidence/dapper-security.json \
+            "$DAPPER_IMAGE"
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/evidence:/evidence" \
+            --volume "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+            --skip-db-update --offline-scan --scanners vuln,secret \
+            --format json --output /evidence/runtime-security.json \
+            "$RUNTIME_IMAGE"
+
+          docker run --rm \
+            --volume "$source_tree:/scan:ro" \
+            --volume "$PWD/evidence:/evidence" \
+            --volume "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" fs \
+            --skip-db-update --offline-scan --format cyclonedx \
+            --output /evidence/source.cdx.json /scan
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/evidence:/evidence" \
+            --volume "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+            --skip-db-update --offline-scan --format cyclonedx \
+            --output /evidence/dapper.cdx.json "$DAPPER_IMAGE"
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/evidence:/evidence" \
+            --volume "$trivy_cache:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image \
+            --skip-db-update --offline-scan --format cyclonedx \
+            --output /evidence/runtime.cdx.json "$RUNTIME_IMAGE"
+
+      - name: Enforce zero Critical, High, or secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > evidence/security-summary.txt
+          for scope in source dapper runtime; do
+            report="evidence/${scope}-security.json"
+            secrets="$(jq '[.Results[]?.Secrets[]?] | length' "$report")"
+            critical="$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$report")"
+            high="$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$report")"
+            printf '%s_secrets=%s\n%s_critical=%s\n%s_high=%s\n' \
+              "$scope" "$secrets" "$scope" "$critical" "$scope" "$high" \
+              | tee -a evidence/security-summary.txt
+            test "$secrets" -eq 0
+            test "$critical" -eq 0
+            test "$high" -eq 0
+          done
+          for sbom in evidence/source.cdx.json evidence/dapper.cdx.json evidence/runtime.cdx.json; do
+            jq -e '.bomFormat == "CycloneDX"' "$sbom" >/dev/null
+          done
+          for sbom in evidence/dapper.cdx.json evidence/runtime.cdx.json; do
+            jq -e '([.components[]?] | length) > 0' "$sbom" >/dev/null
+          done
+
+      - name: Upload review evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: network-plugin-manager-supply-chain-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean runner resources
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          docker image rm -f "$DAPPER_IMAGE" "$RUNTIME_IMAGE" "$TRIVY_IMAGE" 2>/dev/null
+          docker builder prune --all --force >/dev/null 2>&1
+          sudo rm -rf bin dist evidence "$RUNNER_TEMP/trivy-cache"
+          true

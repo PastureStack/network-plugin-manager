@@ -12,4 +12,4 @@ permissions:
 
 jobs:
   integrity:
-    uses: PastureStack/.github/.github/workflows/repository-integrity.yml@main
+    uses: PastureStack/.github/.github/workflows/repository-integrity.yml@86986b855e3cde8bab6b5221407417365ef138a4 # main 2026-08-16
