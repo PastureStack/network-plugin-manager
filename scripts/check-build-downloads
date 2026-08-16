@@ -177,7 +177,10 @@ require_pattern package/Dockerfile 'org\.opencontainers\.image\.revision="\$\{IM
 require_pattern scripts/package '--build-arg IMAGE_REVISION="\$\{IMAGE_REVISION\}"' "package_revision_build_arg_missing"
 require_pattern scripts/package '--build-arg SOURCE_DATE_EPOCH="\$\{SOURCE_DATE_EPOCH\}"' "package_source_date_epoch_missing"
 require_pattern scripts/package '--build-arg UBUNTU_SNAPSHOT="\$\{UBUNTU_SNAPSHOT\}"' "package_ubuntu_snapshot_missing"
-require_pattern scripts/package 'rewrite-timestamp=true,compatibility-version=20' "reproducible_image_export_missing"
+require_fixed scripts/package 'export SOURCE_DATE_EPOCH' "buildkit_source_date_epoch_missing"
+require_pattern scripts/package '^[[:space:]]+--load[[:space:]]+\\$' "buildx_docker_load_missing"
+require_pattern scripts/package '^[[:space:]]+--tag "\$\{IMAGE\}"[[:space:]]+\\$' "buildx_image_tag_missing"
+reject_pattern scripts/package 'type=docker,dest=' "unsupported_docker_driver_exporter"
 
 require_pattern package/update-platform-ca 'PLATFORM_CA_ROOT:-/var/lib/pasturestack/etc/ssl/ca\.crt' "platform_ca_root_missing"
 require_pattern package/update-platform-ca 'legacy_ca_root="/var/lib/rancher/etc/ssl/ca\.crt"' "legacy_ca_fallback_missing"
