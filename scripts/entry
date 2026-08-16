@@ -1,11 +1,33 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-mkdir -p bin dist
-if [ -e ./scripts/$1 ]; then
-    ./scripts/"$@"
-else
-    exec "$@"
+restore_output_ownership() {
+    local status=$?
+    local uid=${DAPPER_UID:-}
+    local gid=${DAPPER_GID:-}
+    local outputs=()
+
+    if [[ ! "$uid" =~ ^[0-9]+$ || ! "$gid" =~ ^[0-9]+$ ]]; then
+        printf 'DAPPER_UID and DAPPER_GID must be numeric\n' >&2
+        return 1
+    fi
+    [ ! -e bin ] || outputs+=(bin)
+    [ ! -e dist ] || outputs+=(dist)
+    if [ "${#outputs[@]}" -gt 0 ]; then
+        chown -R "$uid:$gid" "${outputs[@]}"
+    fi
+    return "$status"
+}
+trap restore_output_ownership EXIT
+
+if [ "$#" -eq 0 ]; then
+    printf 'a command is required\n' >&2
+    exit 64
 fi
 
-chown -R $DAPPER_UID:$DAPPER_GID .
+mkdir -p bin dist
+if [ -e "./scripts/$1" ]; then
+    ./scripts/"$@"
+else
+    "$@"
+fi

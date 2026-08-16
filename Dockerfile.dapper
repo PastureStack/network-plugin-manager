@@ -1,35 +1,42 @@
 ARG SOURCE_DATE_EPOCH
-FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb AS snapshot-ca-bootstrap
+FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03 AS snapshot-ca-bootstrap
 ADD --checksum=sha256:6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90 \
-    https://snapshot.ubuntu.com/ubuntu/20260722T164940Z/pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb \
+    https://snapshot.ubuntu.com/ubuntu/20260808T000000Z/pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb \
     /tmp/ca-certificates.deb
 RUN dpkg-deb -x /tmp/ca-certificates.deb /tmp/ca-certificates && \
     cp /tmp/ca-certificates/usr/share/ca-certificates/mozilla/ISRG_Root_X1.crt /snapshot-ca.crt
 
-FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb
+FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
 COPY --from=snapshot-ca-bootstrap /snapshot-ca.crt /etc/ssl/certs/ca-certificates.crt
-COPY build-inputs.lock.tsv /usr/share/pasturestack/manifests/build-inputs.lock.tsv
+COPY build-inputs.lock.tsv ubuntu-apt.lock /usr/share/pasturestack/manifests/
+COPY toolchain/buildx-security.patch /usr/share/pasturestack/patches/buildx-security.patch
 
 ARG DAPPER_HOST_ARCH=amd64
 ARG GO_VERSION=1.26.6
-ARG DOCKER_VERSION=29.6.2
-ARG BUILDX_VERSION=0.34.1
-ARG UBUNTU_SNAPSHOT=20260722T164940Z
 ARG GO_LINUX_AMD64_SHA256=708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
 ARG GO_LINUX_ARM64_SHA256=d0507e9e9d7fe012aae570108cbd76c15de879e17130ab8cb90d4d7445cb1f2e
-ARG DOCKER_LINUX_AMD64_SHA256=d6204aea92238e2453d5445c885b9d2e5eb8f82915568ec50edf9dbe12a3ac74
-ARG DOCKER_LINUX_ARM64_SHA256=8d16d8b3b158c132a9fb9963d4b4345746f925e287e154c9ed880ac257baf292
-ARG BUILDX_LINUX_AMD64_SHA256=f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b
-ARG BUILDX_LINUX_ARM64_SHA256=c34e32dd6ea2653d960d6c099c9f09b9077e4a37504d2d31e5066eccc3904231
+ARG DOCKER_VERSION=29.7.2
+ARG DOCKER_GIT_COMMIT=a7dcaa6fdb6ed04aacbfdc76357fdae01605609e
+ARG DOCKER_SOURCE_DATE_EPOCH=1785922455
+ARG DOCKER_SOURCE_SHA256=6e5c91d3a5a79db78cf989d07727d00e757aa0da4d135a3ce4b86061b83fb511
+ARG DOCKER_X_TEXT_VERSION=v0.40.0
+ARG DOCKER_GRPC_VERSION=v1.82.1
+ARG BUILDX_VERSION=0.36.1
+ARG BUILDX_GIT_COMMIT=1d8dde89b8aba914e05e45366770736fea1fd690
+ARG BUILDX_SOURCE_DATE_EPOCH=1785856317
+ARG BUILDX_SOURCE_SHA256=fb28b5c2a198d05482f0656dfb7ee161240a904e36697bf7108e5d517f23854b
+ARG UBUNTU_SNAPSHOT=20260808T000000Z
+ARG UBUNTU_SNAPSHOT_BASE=https://snapshot.ubuntu.com/ubuntu
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOST_ARCH=${DAPPER_HOST_ARCH} ARCH=${DAPPER_HOST_ARCH}
 
-ARG UBUNTU_SNAPSHOT_BASE=https://snapshot.ubuntu.com/ubuntu
 RUN set -eux; \
+    . /usr/share/pasturestack/manifests/ubuntu-apt.lock; \
     locked_snapshot="$(awk -F '\t' '$1 == "ubuntu_snapshot" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
     locked_snapshot_base="$(awk -F '\t' '$1 == "ubuntu_snapshot_base" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
     test "${UBUNTU_SNAPSHOT}" = "${locked_snapshot}"; \
+    test "${UBUNTU_SNAPSHOT}" = "${UBUNTU_APT_SNAPSHOT}"; \
     test "${UBUNTU_SNAPSHOT_BASE}" = "${locked_snapshot_base}"; \
     snapshot_uri="${UBUNTU_SNAPSHOT_BASE%/}/${UBUNTU_SNAPSHOT}"; \
     test "${snapshot_uri}" = "$(awk -F '\t' '$1 == "ubuntu_snapshot_uri" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
@@ -37,28 +44,29 @@ RUN set -eux; \
     printf 'Types: deb\nURIs: %s\nSuites: resolute resolute-updates resolute-backports resolute-security\nComponents: main universe restricted multiverse\nSigned-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\nSnapshot: no\n' \
         "${snapshot_uri}" > /etc/apt/sources.list.d/pasturestack-snapshot.sources; \
     printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";\nAcquire::https::Verify-Peer "true";\nAcquire::https::Verify-Host "true";\nAcquire::http::Pipeline-Depth "0";\nAcquire::AllowInsecureRepositories "false";\nAPT::Get::AllowUnauthenticated "false";\n' > /etc/apt/apt.conf.d/80pasturestack-retries; \
-    apt-get update && \
+    apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bash \
-        ca-certificates \
-        curl \
-        file \
-        gcc \
-        git \
-        libc6-dev \
-        make \
-        tar \
-        xz-utils && \
+        "bash=${UBUNTU_APT_BASH_VERSION}" \
+        "ca-certificates=${UBUNTU_APT_CA_CERTIFICATES_VERSION}" \
+        "curl=${UBUNTU_APT_CURL_VERSION}" \
+        "file=${UBUNTU_APT_FILE_VERSION}" \
+        "gcc=${UBUNTU_APT_GCC_VERSION}" \
+        "git=${UBUNTU_APT_GIT_VERSION}" \
+        "libc6-dev=${UBUNTU_APT_LIBC6_DEV_VERSION}" \
+        "make=${UBUNTU_APT_MAKE_VERSION}" \
+        "tar=${UBUNTU_APT_TAR_VERSION}" \
+        "xz-utils=${UBUNTU_APT_XZ_UTILS_VERSION}"; \
     { \
         printf 'record\tname\tarchitecture\tversion\n'; \
         printf 'metadata\tschema\t-\tpasturestack.dpkg-manifest/v1\n'; \
         printf 'metadata\tubuntu_snapshot\t-\t%s\n' "${UBUNTU_SNAPSHOT}"; \
         dpkg-query -W -f='package\t${binary:Package}\t${Architecture}\t${Version}\n' | LC_ALL=C sort; \
-    } > /usr/share/pasturestack/manifests/dapper-ubuntu-packages.tsv && \
-    rm -rf /var/lib/apt/lists/* && \
-    rm -f /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache && \
-    rm -f /usr/bin/pebble && \
-    rm -f /bin/sh && ln -s /bin/bash /bin/sh
+    } > /usr/share/pasturestack/manifests/dapper-ubuntu-packages.tsv; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
+    rm -f /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache; \
+    rm -f /usr/bin/pebble; \
+    rm -f /bin/sh; \
+    ln -s /bin/bash /bin/sh
 
 ENV GOPATH=/go \
     PATH=/go/bin:/usr/local/go/bin:${PATH} \
@@ -66,52 +74,90 @@ ENV GOPATH=/go \
     GO111MODULE=off \
     GOCACHE=/tmp/go-build-cache \
     GOTELEMETRY=off \
+    GOTOOLCHAIN=local \
     XDG_CONFIG_HOME=/tmp/go-config \
     GIT_CONFIG_GLOBAL=/tmp/gitconfig
 
-RUN case "${DAPPER_HOST_ARCH}" in \
+RUN set -eux; \
+    case "${DAPPER_HOST_ARCH}" in \
         amd64) go_arch=amd64; go_sha="${GO_LINUX_AMD64_SHA256}"; go_lock_key=go_linux_amd64_sha256 ;; \
         arm64) go_arch=arm64; go_sha="${GO_LINUX_ARM64_SHA256}"; go_lock_key=go_linux_arm64_sha256 ;; \
         *) echo "unsupported DAPPER_HOST_ARCH=${DAPPER_HOST_ARCH}" >&2; exit 1 ;; \
-    esac && \
-    test "${GO_VERSION}" = "$(awk -F '\t' '$1 == "go_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)" && \
-    test "${go_sha}" = "$(awk -F '\t' -v key="${go_lock_key}" '$1 == key { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)" && \
+    esac; \
+    test "${GO_VERSION}" = "$(awk -F '\t' '$1 == "go_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${go_sha}" = "$(awk -F '\t' -v key="${go_lock_key}" '$1 == key { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
     curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 300 \
-        -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz" && \
-    echo "${go_sha}  /tmp/go.tgz" | sha256sum -c - && \
-    tar -xzf /tmp/go.tgz -C /usr/local && \
-    rm -f /tmp/go.tgz && \
+        -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${go_arch}.tar.gz"; \
+    echo "${go_sha}  /tmp/go.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/go.tgz -C /usr/local; \
+    rm -f /tmp/go.tgz; \
     go version
 
-RUN case "${DAPPER_HOST_ARCH}" in \
-        amd64) docker_arch=x86_64; docker_sha="${DOCKER_LINUX_AMD64_SHA256}"; docker_lock_key=docker_linux_amd64_sha256 ;; \
-        arm64) docker_arch=aarch64; docker_sha="${DOCKER_LINUX_ARM64_SHA256}"; docker_lock_key=docker_linux_arm64_sha256 ;; \
-        *) echo "unsupported DAPPER_HOST_ARCH=${DAPPER_HOST_ARCH}" >&2; exit 1 ;; \
-    esac && \
-    test "${DOCKER_VERSION}" = "$(awk -F '\t' '$1 == "docker_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)" && \
-    test "${docker_sha}" = "$(awk -F '\t' -v key="${docker_lock_key}" '$1 == key { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)" && \
+RUN set -eux; \
+    docker_source_uri="$(awk -F '\t' '$1 == "docker_source_uri" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${DOCKER_VERSION}" = "$(awk -F '\t' '$1 == "docker_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${DOCKER_GIT_COMMIT}" = "$(awk -F '\t' '$1 == "docker_git_commit" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${DOCKER_SOURCE_DATE_EPOCH}" = "$(awk -F '\t' '$1 == "docker_source_date_epoch" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${DOCKER_SOURCE_SHA256}" = "$(awk -F '\t' '$1 == "docker_source_sha256" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${DOCKER_X_TEXT_VERSION}" = "$(awk -F '\t' '$1 == "docker_x_text_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${DOCKER_GRPC_VERSION}" = "$(awk -F '\t' '$1 == "docker_grpc_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
     curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 300 \
-        -o /tmp/docker.tgz "https://download.docker.com/linux/static/stable/${docker_arch}/docker-${DOCKER_VERSION}.tgz" && \
-    echo "${docker_sha}  /tmp/docker.tgz" | sha256sum -c - && \
-    tar xzf /tmp/docker.tgz -C /usr/bin --strip-components=1 docker/docker && \
-    chmod +x /usr/bin/docker && \
-    rm -f /tmp/docker.tgz && \
-    docker --version
+        -o /tmp/docker-cli.tar.gz "${docker_source_uri}"; \
+    echo "${DOCKER_SOURCE_SHA256}  /tmp/docker-cli.tar.gz" | sha256sum -c -; \
+    mkdir -p /tmp/docker-cli-src; \
+    tar -xzf /tmp/docker-cli.tar.gz -C /tmp/docker-cli-src --strip-components=1; \
+    cd /tmp/docker-cli-src; \
+    grep -F "golang.org/x/text ${DOCKER_X_TEXT_VERSION}" vendor.mod; \
+    grep -F "google.golang.org/grpc ${DOCKER_GRPC_VERSION}" vendor.mod; \
+    cp vendor.mod go.mod; \
+    cp vendor.sum go.sum; \
+    GO111MODULE=on GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOMODCACHE=/tmp/docker-go-mod go mod download; \
+    GO111MODULE=on GOPROXY=off GOSUMDB=sum.golang.org GOMODCACHE=/tmp/docker-go-mod go mod verify; \
+    docker_build_time="$(date -u --date="@${DOCKER_SOURCE_DATE_EPOCH}" +'%Y-%m-%dT%H:%M:%SZ')"; \
+    CGO_ENABLED=0 GO111MODULE=on GOPROXY=off GOSUMDB=sum.golang.org GOMODCACHE=/tmp/docker-go-mod GOOS=linux GOARCH="${DAPPER_HOST_ARCH}" \
+        go build -mod=mod -trimpath -buildvcs=false -tags 'grpcnotrace osusergo netgo' \
+        -ldflags "-s -w -buildid= -X github.com/docker/cli/cli/version.Version=${DOCKER_VERSION} -X github.com/docker/cli/cli/version.GitCommit=${DOCKER_GIT_COMMIT} -X github.com/docker/cli/cli/version.BuildTime=${docker_build_time}" \
+        -o /usr/bin/docker ./cmd/docker; \
+    chmod +x /usr/bin/docker; \
+    docker --version; \
+    go version -m /usr/bin/docker > /usr/share/pasturestack/manifests/docker-cli-go-version.txt; \
+    grep -F $'dep\tgolang.org/x/text\t'"${DOCKER_X_TEXT_VERSION}"$'\t' /usr/share/pasturestack/manifests/docker-cli-go-version.txt; \
+    grep -F $'dep\tgoogle.golang.org/grpc\t'"${DOCKER_GRPC_VERSION}"$'\t' /usr/share/pasturestack/manifests/docker-cli-go-version.txt; \
+    rm -rf /tmp/docker-cli-src /tmp/docker-cli.tar.gz /tmp/docker-go-mod /tmp/go-build-cache
 
-RUN case "${DAPPER_HOST_ARCH}" in \
-        amd64) buildx_arch=amd64; buildx_sha="${BUILDX_LINUX_AMD64_SHA256}"; buildx_lock_key=buildx_linux_amd64_sha256 ;; \
-        arm64) buildx_arch=arm64; buildx_sha="${BUILDX_LINUX_ARM64_SHA256}"; buildx_lock_key=buildx_linux_arm64_sha256 ;; \
-        *) echo "unsupported DAPPER_HOST_ARCH=${DAPPER_HOST_ARCH}" >&2; exit 1 ;; \
-    esac && \
-    test "${BUILDX_VERSION}" = "$(awk -F '\t' '$1 == "buildx_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)" && \
-    test "${buildx_sha}" = "$(awk -F '\t' -v key="${buildx_lock_key}" '$1 == key { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)" && \
-    mkdir -p /usr/libexec/docker/cli-plugins && \
+RUN set -eux; \
+    buildx_source_uri="$(awk -F '\t' '$1 == "buildx_source_uri" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    buildx_patch_sha="$(awk -F '\t' '$1 == "buildx_security_patch_sha256" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${BUILDX_VERSION}" = "$(awk -F '\t' '$1 == "buildx_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${BUILDX_GIT_COMMIT}" = "$(awk -F '\t' '$1 == "buildx_git_commit" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${BUILDX_SOURCE_DATE_EPOCH}" = "$(awk -F '\t' '$1 == "buildx_source_date_epoch" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test "${BUILDX_SOURCE_SHA256}" = "$(awk -F '\t' '$1 == "buildx_source_sha256" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
     curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 300 \
-        -o /usr/libexec/docker/cli-plugins/docker-buildx \
-        "https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}/buildx-v${BUILDX_VERSION}.linux-${buildx_arch}" && \
-    echo "${buildx_sha}  /usr/libexec/docker/cli-plugins/docker-buildx" | sha256sum -c - && \
-    chmod +x /usr/libexec/docker/cli-plugins/docker-buildx && \
-    docker buildx version
+        -o /tmp/buildx.tar.gz "${buildx_source_uri}"; \
+    echo "${BUILDX_SOURCE_SHA256}  /tmp/buildx.tar.gz" | sha256sum -c -; \
+    mkdir -p /tmp/buildx-src /usr/libexec/docker/cli-plugins; \
+    tar -xzf /tmp/buildx.tar.gz -C /tmp/buildx-src --strip-components=1; \
+    cd /tmp/buildx-src; \
+    echo "${buildx_patch_sha}  /usr/share/pasturestack/patches/buildx-security.patch" | sha256sum -c -; \
+    git apply --check /usr/share/pasturestack/patches/buildx-security.patch; \
+    git apply /usr/share/pasturestack/patches/buildx-security.patch; \
+    GO111MODULE=on GOPROXY=off GOSUMDB=sum.golang.org go list -mod=vendor -deps ./cmd/buildx > /tmp/buildx-deps.txt; \
+    if grep '^github.com/docker/docker/' /tmp/buildx-deps.txt; then \
+        echo 'patched Buildx still compiles github.com/docker/docker' >&2; \
+        exit 1; \
+    fi; \
+    CGO_ENABLED=0 GO111MODULE=on GOPROXY=off GOSUMDB=sum.golang.org GOOS=linux GOARCH="${DAPPER_HOST_ARCH}" \
+        go build -mod=vendor -trimpath -buildvcs=false \
+        -ldflags "-s -w -buildid= -X github.com/docker/buildx/version.Version=${BUILDX_VERSION} -X github.com/docker/buildx/version.Revision=${BUILDX_GIT_COMMIT} -X github.com/docker/buildx/version.Package=github.com/docker/buildx" \
+        -o /usr/libexec/docker/cli-plugins/docker-buildx ./cmd/buildx; \
+    chmod +x /usr/libexec/docker/cli-plugins/docker-buildx; \
+    docker buildx version; \
+    go version -m /usr/libexec/docker/cli-plugins/docker-buildx > /usr/share/pasturestack/manifests/buildx-go-version.txt; \
+    if grep -F $'dep\tgithub.com/docker/docker\t' /usr/share/pasturestack/manifests/buildx-go-version.txt; then \
+        echo 'patched Buildx binary still records github.com/docker/docker' >&2; \
+        exit 1; \
+    fi; \
+    rm -rf /tmp/buildx-src /tmp/buildx.tar.gz /tmp/buildx-deps.txt /tmp/go-build-cache
 
 RUN set -eux; \
     go_installed_sha="$(sha256sum /usr/local/go/bin/go | awk '{ print $1 }')"; \

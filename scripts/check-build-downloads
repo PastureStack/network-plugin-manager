@@ -48,29 +48,16 @@ require_lock_value() {
     fi
 }
 
-reject_apt_version_pins() {
+require_apt_pin() {
     local file="$1"
-    if awk '
-        /apt-get install -y --no-install-recommends/ {
-            in_install = 1
-            next
-        }
-        in_install && /^[[:space:]]*"?[[:alnum:]][[:alnum:].+-]*=/ {
-            found = 1
-        }
-        in_install && /(&&|;)[[:space:]]*\\$/ {
-            in_install = 0
-        }
-        END {
-            exit found ? 0 : 1
-        }
-    ' "$file"; then
-        fail "${file}_fragile_apt_version_pin_present"
-    fi
+    local package="$2"
+    local variable="$3"
+    require_fixed "$file" "\"${package}=\${${variable}}\"" "${file}_${package}_not_exactly_pinned"
 }
 
-bash -n scripts/build scripts/ci scripts/package scripts/validate scripts/version \
-    package/start.sh package/platform-entrypoint.sh package/update-platform-ca
+bash -n scripts/build scripts/check-build-downloads scripts/ci scripts/entry scripts/package scripts/validate scripts/version \
+    package/start.sh package/platform-entrypoint.sh package/update-platform-ca \
+    ubuntu-apt.lock
 
 (
     unset VERSION_OVERRIDE RELEASE_VERSION DIRTY ARCH
@@ -101,47 +88,60 @@ if ! awk -F '\t' '
 fi
 
 require_lock_value schema 'pasturestack.build-inputs/v1'
-require_lock_value ubuntu_image 'ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb'
-require_lock_value ubuntu_snapshot '20260722T164940Z'
+require_lock_value ubuntu_image 'ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03'
+require_lock_value ubuntu_snapshot '20260808T000000Z'
 require_lock_value ubuntu_snapshot_base 'https://snapshot.ubuntu.com/ubuntu'
-require_lock_value ubuntu_snapshot_uri 'https://snapshot.ubuntu.com/ubuntu/20260722T164940Z'
-require_lock_value ca_certificates_deb_uri 'https://snapshot.ubuntu.com/ubuntu/20260722T164940Z/pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb'
+require_lock_value ubuntu_snapshot_uri 'https://snapshot.ubuntu.com/ubuntu/20260808T000000Z'
+require_lock_value ca_certificates_deb_uri 'https://snapshot.ubuntu.com/ubuntu/20260808T000000Z/pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb'
 require_lock_value ca_certificates_deb_sha256 '6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90'
 require_lock_value go_version '1.26.6'
 require_lock_value go_linux_amd64_sha256 '708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89'
 require_lock_value go_linux_arm64_sha256 'd0507e9e9d7fe012aae570108cbd76c15de879e17130ab8cb90d4d7445cb1f2e'
-require_lock_value docker_version '29.6.2'
-require_lock_value docker_linux_amd64_sha256 'd6204aea92238e2453d5445c885b9d2e5eb8f82915568ec50edf9dbe12a3ac74'
-require_lock_value docker_linux_arm64_sha256 '8d16d8b3b158c132a9fb9963d4b4345746f925e287e154c9ed880ac257baf292'
-require_lock_value buildx_version '0.34.1'
-require_lock_value buildx_linux_amd64_sha256 'f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b'
-require_lock_value buildx_linux_arm64_sha256 'c34e32dd6ea2653d960d6c099c9f09b9077e4a37504d2d31e5066eccc3904231'
+require_lock_value docker_version '29.7.2'
+require_lock_value docker_git_commit 'a7dcaa6fdb6ed04aacbfdc76357fdae01605609e'
+require_lock_value docker_tag_object '9f4be4fde650841ec4c85cc48eee513f52c61a1e'
+require_lock_value docker_source_date_epoch '1785922455'
+require_lock_value docker_source_uri 'https://codeload.github.com/docker/cli/tar.gz/a7dcaa6fdb6ed04aacbfdc76357fdae01605609e'
+require_lock_value docker_source_sha256 '6e5c91d3a5a79db78cf989d07727d00e757aa0da4d135a3ce4b86061b83fb511'
+require_lock_value docker_x_text_version 'v0.40.0'
+require_lock_value docker_grpc_version 'v1.82.1'
+require_lock_value buildx_version '0.36.1'
+require_lock_value buildx_git_commit '1d8dde89b8aba914e05e45366770736fea1fd690'
+require_lock_value buildx_tag_object '29f401b496b1531d391cca6cabd8d30b6c478b66'
+require_lock_value buildx_source_date_epoch '1785856317'
+require_lock_value buildx_source_uri 'https://codeload.github.com/docker/buildx/tar.gz/1d8dde89b8aba914e05e45366770736fea1fd690'
+require_lock_value buildx_source_sha256 'fb28b5c2a198d05482f0656dfb7ee161240a904e36697bf7108e5d517f23854b'
+require_lock_value buildx_security_patch_sha256 '9d424e752f24ea0e34ccd80340428f067ae8109204c401c93786a2b0be6ea993'
 require_lock_value buildkit_image 'moby/buildkit:buildx-stable-1@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8'
 
-require_pattern Dockerfile.dapper 'FROM ubuntu:26\.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb' "dapper_base_not_pinned"
+require_pattern Dockerfile.dapper 'FROM ubuntu:26\.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03' "dapper_base_not_pinned"
 require_pattern Dockerfile.dapper 'ARG GO_VERSION=1\.26\.6' "go_version_not_current"
 require_pattern Dockerfile.dapper 'GO_LINUX_AMD64_SHA256=708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89' "go_amd64_sha_not_current"
 require_pattern Dockerfile.dapper 'GO_LINUX_ARM64_SHA256=d0507e9e9d7fe012aae570108cbd76c15de879e17130ab8cb90d4d7445cb1f2e' "go_arm64_sha_not_current"
-require_pattern Dockerfile.dapper 'ARG DOCKER_VERSION=29\.6\.2' "dapper_docker_version_not_current"
-require_pattern Dockerfile.dapper 'DOCKER_LINUX_AMD64_SHA256=d6204aea92238e2453d5445c885b9d2e5eb8f82915568ec50edf9dbe12a3ac74' "dapper_docker_amd64_sha_not_current"
-require_pattern Dockerfile.dapper 'DOCKER_LINUX_ARM64_SHA256=8d16d8b3b158c132a9fb9963d4b4345746f925e287e154c9ed880ac257baf292' "dapper_docker_arm64_sha_not_current"
-require_pattern Dockerfile.dapper 'ARG BUILDX_VERSION=0\.34\.1' "buildx_version_not_current"
-require_pattern Dockerfile.dapper 'ARG UBUNTU_SNAPSHOT=20260722T164940Z' "dapper_ubuntu_snapshot_not_pinned"
+require_pattern Dockerfile.dapper 'ARG DOCKER_VERSION=29\.7\.2' "dapper_docker_version_not_current"
+require_pattern Dockerfile.dapper 'ARG DOCKER_GIT_COMMIT=[0-9a-f]{40}' "dapper_docker_source_commit_missing"
+require_pattern Dockerfile.dapper 'ARG DOCKER_SOURCE_SHA256=[0-9a-f]{64}' "dapper_docker_source_digest_missing"
+require_pattern Dockerfile.dapper 'ARG BUILDX_VERSION=0\.36\.1' "buildx_version_not_current"
+require_pattern Dockerfile.dapper 'ARG BUILDX_GIT_COMMIT=[0-9a-f]{40}' "buildx_source_commit_missing"
+require_pattern Dockerfile.dapper 'ARG BUILDX_SOURCE_SHA256=[0-9a-f]{64}' "buildx_source_digest_missing"
+require_pattern Dockerfile.dapper 'ARG UBUNTU_SNAPSHOT=20260808T000000Z' "dapper_ubuntu_snapshot_not_pinned"
 require_pattern Dockerfile.dapper 'ARG UBUNTU_SNAPSHOT_BASE=https://snapshot\.ubuntu\.com/ubuntu' "dapper_snapshot_service_missing"
 require_pattern Dockerfile.dapper 'ADD --checksum=sha256:6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90' "dapper_snapshot_ca_bootstrap_not_pinned"
-require_pattern Dockerfile.dapper 'BUILDX_LINUX_AMD64_SHA256=f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b' "buildx_amd64_sha_not_current"
-require_pattern Dockerfile.dapper 'BUILDX_LINUX_ARM64_SHA256=c34e32dd6ea2653d960d6c099c9f09b9077e4a37504d2d31e5066eccc3904231' "buildx_arm64_sha_not_current"
-require_pattern Makefile 'DOCKER_VERSION \?= 29\.6\.2' "makefile_docker_version_not_current"
-require_pattern Makefile 'BUILDX_VERSION \?= 0\.34\.1' "makefile_buildx_version_not_current"
-require_pattern Makefile 'UBUNTU_SNAPSHOT \?= 20260722T164940Z' "makefile_ubuntu_snapshot_not_pinned"
-require_pattern Makefile 'DAPPER_IMAGE \?= pasturestack-network-plugin-manager-dapper:go1\.26\.6-docker29\.6\.2-buildx0\.34\.1' "dapper_image_identity_not_pinned"
+require_pattern Makefile 'DOCKER_VERSION \?= 29\.7\.2' "makefile_docker_version_not_current"
+require_pattern Makefile 'BUILDX_VERSION \?= 0\.36\.1' "makefile_buildx_version_not_current"
+require_pattern Makefile 'UBUNTU_SNAPSHOT \?= 20260808T000000Z' "makefile_ubuntu_snapshot_not_pinned"
+require_pattern Makefile 'DAPPER_IMAGE \?= pasturestack-network-plugin-manager-dapper:go1\.26\.6-docker29\.7\.2-buildx0\.36\.1' "dapper_image_identity_not_pinned"
 require_pattern Dockerfile.dapper 'curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 300[[:space:]]+\\' "dapper_curl_not_bounded"
 require_pattern Dockerfile.dapper '-o /tmp/go\.tgz "https://go\.dev/dl/go\$\{GO_VERSION\}\.linux-\$\{go_arch\}\.tar\.gz"' "go_download_not_file_backed"
-require_pattern Dockerfile.dapper '-o /tmp/docker\.tgz "https://download\.docker\.com/linux/static/stable/\$\{docker_arch\}/docker-\$\{DOCKER_VERSION\}\.tgz"' "dapper_docker_download_not_file_backed"
+require_pattern Dockerfile.dapper '-o /tmp/docker-cli\.tar\.gz "\$\{docker_source_uri\}"' "dapper_docker_source_download_not_file_backed"
+require_pattern Dockerfile.dapper '-o /tmp/buildx\.tar\.gz "\$\{buildx_source_uri\}"' "dapper_buildx_source_download_not_file_backed"
 reject_pattern Dockerfile.dapper 'curl[^|]*\|[[:space:]]*tar' "legacy_pipe_to_tar_download"
-require_fixed Dockerfile.dapper 'COPY build-inputs.lock.tsv /usr/share/pasturestack/manifests/build-inputs.lock.tsv' "dapper_build_input_lock_not_embedded"
+require_fixed Dockerfile.dapper 'COPY build-inputs.lock.tsv ubuntu-apt.lock /usr/share/pasturestack/manifests/' "dapper_build_locks_not_embedded"
+require_fixed Dockerfile.dapper 'COPY toolchain/buildx-security.patch /usr/share/pasturestack/patches/buildx-security.patch' "buildx_security_patch_not_embedded"
 require_fixed Dockerfile.dapper '/usr/share/pasturestack/manifests/dapper-ubuntu-packages.tsv' "dapper_dpkg_manifest_missing"
 require_fixed Dockerfile.dapper '/usr/share/pasturestack/manifests/dapper-toolchain.tsv' "dapper_toolchain_manifest_missing"
+require_fixed Dockerfile.dapper '/usr/share/pasturestack/manifests/docker-cli-go-version.txt' "docker_cli_go_manifest_missing"
+require_fixed Dockerfile.dapper '/usr/share/pasturestack/manifests/buildx-go-version.txt' "buildx_go_manifest_missing"
 require_fixed Dockerfile.dapper "FROM $(lock_value ubuntu_image)" "dapper_ubuntu_image_lock_mismatch"
 require_fixed Dockerfile.dapper "ADD --checksum=sha256:$(lock_value ca_certificates_deb_sha256)" "dapper_ca_digest_lock_mismatch"
 require_fixed Dockerfile.dapper "    $(lock_value ca_certificates_deb_uri) \\" "dapper_ca_uri_lock_mismatch"
@@ -149,24 +149,45 @@ require_fixed Dockerfile.dapper "ARG GO_VERSION=$(lock_value go_version)" "dappe
 require_fixed Dockerfile.dapper "ARG GO_LINUX_AMD64_SHA256=$(lock_value go_linux_amd64_sha256)" "dapper_go_amd64_digest_lock_mismatch"
 require_fixed Dockerfile.dapper "ARG GO_LINUX_ARM64_SHA256=$(lock_value go_linux_arm64_sha256)" "dapper_go_arm64_digest_lock_mismatch"
 require_fixed Dockerfile.dapper "ARG DOCKER_VERSION=$(lock_value docker_version)" "dapper_docker_version_lock_mismatch"
-require_fixed Dockerfile.dapper "ARG DOCKER_LINUX_AMD64_SHA256=$(lock_value docker_linux_amd64_sha256)" "dapper_docker_amd64_digest_lock_mismatch"
-require_fixed Dockerfile.dapper "ARG DOCKER_LINUX_ARM64_SHA256=$(lock_value docker_linux_arm64_sha256)" "dapper_docker_arm64_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG DOCKER_GIT_COMMIT=$(lock_value docker_git_commit)" "dapper_docker_commit_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG DOCKER_SOURCE_DATE_EPOCH=$(lock_value docker_source_date_epoch)" "dapper_docker_epoch_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG DOCKER_SOURCE_SHA256=$(lock_value docker_source_sha256)" "dapper_docker_source_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG DOCKER_X_TEXT_VERSION=$(lock_value docker_x_text_version)" "dapper_docker_x_text_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG DOCKER_GRPC_VERSION=$(lock_value docker_grpc_version)" "dapper_docker_grpc_lock_mismatch"
 require_fixed Dockerfile.dapper "ARG BUILDX_VERSION=$(lock_value buildx_version)" "dapper_buildx_version_lock_mismatch"
-require_fixed Dockerfile.dapper "ARG BUILDX_LINUX_AMD64_SHA256=$(lock_value buildx_linux_amd64_sha256)" "dapper_buildx_amd64_digest_lock_mismatch"
-require_fixed Dockerfile.dapper "ARG BUILDX_LINUX_ARM64_SHA256=$(lock_value buildx_linux_arm64_sha256)" "dapper_buildx_arm64_digest_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG BUILDX_GIT_COMMIT=$(lock_value buildx_git_commit)" "dapper_buildx_commit_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG BUILDX_SOURCE_DATE_EPOCH=$(lock_value buildx_source_date_epoch)" "dapper_buildx_epoch_lock_mismatch"
+require_fixed Dockerfile.dapper "ARG BUILDX_SOURCE_SHA256=$(lock_value buildx_source_sha256)" "dapper_buildx_source_digest_lock_mismatch"
 require_fixed Dockerfile.dapper "ARG UBUNTU_SNAPSHOT=$(lock_value ubuntu_snapshot)" "dapper_ubuntu_snapshot_lock_mismatch"
 require_fixed Dockerfile.dapper "ARG UBUNTU_SNAPSHOT_BASE=$(lock_value ubuntu_snapshot_base)" "dapper_ubuntu_snapshot_base_lock_mismatch"
 require_fixed Dockerfile.dapper 'test "${GO_VERSION}" = "$(awk' "dapper_go_lock_not_enforced_at_build"
 require_fixed Dockerfile.dapper 'test "${DOCKER_VERSION}" = "$(awk' "dapper_docker_lock_not_enforced_at_build"
 require_fixed Dockerfile.dapper 'test "${BUILDX_VERSION}" = "$(awk' "dapper_buildx_lock_not_enforced_at_build"
-reject_apt_version_pins Dockerfile.dapper
+require_fixed Dockerfile.dapper 'GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org' "docker_cli_module_verification_missing"
+require_fixed Dockerfile.dapper 'go build -mod=mod -trimpath -buildvcs=false' "docker_cli_source_build_missing"
+require_fixed Dockerfile.dapper 'go build -mod=vendor -trimpath -buildvcs=false' "buildx_vendored_source_build_missing"
+require_fixed Dockerfile.dapper 'git apply --check /usr/share/pasturestack/patches/buildx-security.patch' "buildx_patch_preflight_missing"
+require_fixed Dockerfile.dapper "if grep -F \$'dep\\tgithub.com/docker/docker\\t' /usr/share/pasturestack/manifests/buildx-go-version.txt" "buildx_docker_module_absence_not_enforced"
+for apt_spec in \
+    bash:UBUNTU_APT_BASH_VERSION \
+    ca-certificates:UBUNTU_APT_CA_CERTIFICATES_VERSION \
+    curl:UBUNTU_APT_CURL_VERSION \
+    file:UBUNTU_APT_FILE_VERSION \
+    gcc:UBUNTU_APT_GCC_VERSION \
+    git:UBUNTU_APT_GIT_VERSION \
+    libc6-dev:UBUNTU_APT_LIBC6_DEV_VERSION \
+    make:UBUNTU_APT_MAKE_VERSION \
+    tar:UBUNTU_APT_TAR_VERSION \
+    xz-utils:UBUNTU_APT_XZ_UTILS_VERSION; do
+    require_apt_pin Dockerfile.dapper "${apt_spec%%:*}" "${apt_spec#*:}"
+done
 
-require_pattern package/Dockerfile 'FROM ubuntu:26\.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb' "runtime_base_not_pinned"
-require_pattern package/Dockerfile 'ARG DOCKER_VERSION=29\.6\.2' "package_docker_version_not_current"
-require_pattern package/Dockerfile 'DOCKER_LINUX_AMD64_SHA256=d6204aea92238e2453d5445c885b9d2e5eb8f82915568ec50edf9dbe12a3ac74' "package_docker_sha_not_current"
+require_pattern package/Dockerfile 'FROM ubuntu:26\.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03' "runtime_base_not_pinned"
+require_pattern package/Dockerfile 'ARG DOCKER_VERSION=29\.7\.2' "package_docker_version_not_current"
+require_pattern package/Dockerfile '^ARG DOCKER_CLI_SHA256$' "package_docker_digest_arg_missing"
 require_pattern package/Dockerfile 'ARG IMAGE_VERSION=dev' "image_version_arg_missing"
 require_pattern package/Dockerfile 'ARG SOURCE_DATE_EPOCH' "source_date_epoch_arg_missing"
-require_pattern package/Dockerfile 'ARG UBUNTU_SNAPSHOT=20260722T164940Z' "runtime_ubuntu_snapshot_not_pinned"
+require_pattern package/Dockerfile 'ARG UBUNTU_SNAPSHOT=20260808T000000Z' "runtime_ubuntu_snapshot_not_pinned"
 require_pattern package/Dockerfile 'ARG UBUNTU_SNAPSHOT_BASE=https://snapshot\.ubuntu\.com/ubuntu' "runtime_snapshot_service_missing"
 require_pattern package/Dockerfile 'ADD --checksum=sha256:6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90' "runtime_snapshot_ca_bootstrap_not_pinned"
 require_pattern package/Dockerfile 'Acquire::https::CaInfo "/etc/ssl/certs/ca-certificates\.crt"' "runtime_snapshot_ca_not_enforced"
@@ -178,6 +199,8 @@ require_pattern package/Dockerfile 'org\.opencontainers\.image\.revision="\$\{IM
 require_pattern scripts/package '--build-arg IMAGE_REVISION="\$\{IMAGE_REVISION\}"' "package_revision_build_arg_missing"
 require_pattern scripts/package '--build-arg SOURCE_DATE_EPOCH="\$\{SOURCE_DATE_EPOCH\}"' "package_source_date_epoch_missing"
 require_pattern scripts/package '--build-arg UBUNTU_SNAPSHOT="\$\{UBUNTU_SNAPSHOT\}"' "package_ubuntu_snapshot_missing"
+require_pattern scripts/package '--build-arg DOCKER_CLI_SHA256="\$\{DOCKER_CLI_SHA256\}"' "package_docker_digest_missing"
+require_fixed scripts/package 'install -D -m 0755 /usr/bin/docker bin/docker' "source_built_docker_not_reused"
 require_fixed scripts/package 'export SOURCE_DATE_EPOCH' "buildkit_source_date_epoch_missing"
 require_fixed scripts/package 'docker buildx create \' "isolated_buildkit_builder_missing"
 require_fixed scripts/package '--driver docker-container \' "docker_container_driver_missing"
@@ -191,18 +214,36 @@ require_pattern package/update-platform-ca 'legacy_ca_root="/var/lib/rancher/etc
 reject_pattern package/update-platform-ca 'curl[[:space:]]' "unexpected_ca_network_fetch"
 reject_pattern package/Dockerfile 'gmail\.com|users\.noreply\.github\.com|C:\\Users|/Users/' "personal_marker_in_runtime_image"
 require_pattern .dockerignore '^!bin/network-plugin-manager$' "verified_binary_excluded_from_build_context"
-require_fixed package/Dockerfile 'COPY build-inputs.lock.tsv /usr/share/pasturestack/manifests/build-inputs.lock.tsv' "runtime_build_input_lock_not_embedded"
+require_pattern .dockerignore '^!bin/docker$' "verified_docker_excluded_from_build_context"
+require_fixed package/Dockerfile 'COPY build-inputs.lock.tsv ubuntu-apt.lock /usr/share/pasturestack/manifests/' "runtime_build_locks_not_embedded"
+require_fixed package/Dockerfile 'COPY bin/docker /usr/bin/docker' "runtime_source_built_docker_missing"
+require_fixed package/Dockerfile 'COPY bin/docker-cli-go-version.txt /usr/share/pasturestack/manifests/docker-cli-go-version.txt' "runtime_docker_go_manifest_missing"
 require_fixed package/Dockerfile '/usr/share/pasturestack/manifests/runtime-ubuntu-packages.tsv' "runtime_dpkg_manifest_missing"
 require_fixed package/Dockerfile '/usr/share/pasturestack/manifests/runtime-toolchain.tsv' "runtime_toolchain_manifest_missing"
 require_fixed package/Dockerfile "FROM $(lock_value ubuntu_image)" "runtime_ubuntu_image_lock_mismatch"
 require_fixed package/Dockerfile "ADD --checksum=sha256:$(lock_value ca_certificates_deb_sha256)" "runtime_ca_digest_lock_mismatch"
 require_fixed package/Dockerfile "    $(lock_value ca_certificates_deb_uri) \\" "runtime_ca_uri_lock_mismatch"
 require_fixed package/Dockerfile "ARG DOCKER_VERSION=$(lock_value docker_version)" "runtime_docker_version_lock_mismatch"
-require_fixed package/Dockerfile "ARG DOCKER_LINUX_AMD64_SHA256=$(lock_value docker_linux_amd64_sha256)" "runtime_docker_digest_lock_mismatch"
 require_fixed package/Dockerfile "ARG UBUNTU_SNAPSHOT=$(lock_value ubuntu_snapshot)" "runtime_ubuntu_snapshot_lock_mismatch"
 require_fixed package/Dockerfile "ARG UBUNTU_SNAPSHOT_BASE=$(lock_value ubuntu_snapshot_base)" "runtime_ubuntu_snapshot_base_lock_mismatch"
 require_fixed package/Dockerfile 'test "${DOCKER_VERSION}" = "$(awk' "runtime_docker_lock_not_enforced_at_build"
-reject_apt_version_pins package/Dockerfile
+reject_pattern package/Dockerfile 'download\.docker\.com|codeload\.github\.com/docker' "runtime_downloads_docker_toolchain"
+for apt_spec in \
+    bash:UBUNTU_APT_BASH_VERSION \
+    ca-certificates:UBUNTU_APT_CA_CERTIFICATES_VERSION \
+    conntrack:UBUNTU_APT_CONNTRACK_VERSION \
+    curl:UBUNTU_APT_CURL_VERSION \
+    gawk:UBUNTU_APT_GAWK_VERSION \
+    iproute2:UBUNTU_APT_IPROUTE2_VERSION \
+    iptables:UBUNTU_APT_IPTABLES_VERSION \
+    jq:UBUNTU_APT_JQ_VERSION \
+    net-tools:UBUNTU_APT_NET_TOOLS_VERSION \
+    procps:UBUNTU_APT_PROCPS_VERSION \
+    psmisc:UBUNTU_APT_PSMISC_VERSION \
+    tar:UBUNTU_APT_TAR_VERSION \
+    util-linux:UBUNTU_APT_UTIL_LINUX_VERSION; do
+    require_apt_pin package/Dockerfile "${apt_spec%%:*}" "${apt_spec#*:}"
+done
 
 require_fixed .github/workflows/repository-integrity.yml 'uses: PastureStack/.github/.github/workflows/repository-integrity.yml@86986b855e3cde8bab6b5221407417365ef138a4' "repository_integrity_workflow_not_commit_pinned"
 require_pattern .github/workflows/supply-chain.yml '^[[:space:]]+pull_request:' "supply_chain_pr_trigger_missing"
@@ -214,6 +255,20 @@ require_fixed .github/workflows/supply-chain.yml 'test "$first_image_id" = "$sec
 require_fixed .github/workflows/supply-chain.yml '/evidence/dapper.cdx.json' "dapper_sbom_missing"
 require_fixed .github/workflows/supply-chain.yml '/evidence/runtime.cdx.json' "runtime_sbom_missing"
 require_fixed .github/workflows/supply-chain.yml 'test "$high" -eq 0' "trivy_high_gate_missing"
+require_fixed .github/workflows/supply-chain.yml 'for scope in source runtime; do' "source_runtime_zero_gate_missing"
+require_fixed .github/workflows/supply-chain.yml "vex_expires='2026-09-15T00:00:00Z'" "builder_vex_expiry_missing"
+require_fixed .github/workflows/supply-chain.yml 'evidence/dapper.openvex.json' "builder_vex_evidence_missing"
+require_fixed .github/workflows/supply-chain.yml '! grep -Eq $'"'"'^package\tlinux-libc-dev([:]|\t)'"'"' evidence/runtime-dpkg.tsv' "runtime_kernel_header_boundary_missing"
+require_fixed .github/workflows/supply-chain.yml 'test "$dapper_docker_sha" = "$runtime_docker_sha"' "runtime_docker_reuse_gate_missing"
+require_fixed .github/workflows/supply-chain.yml 'diff -u toolchain/buildx-security.patch evidence/buildx-security.patch' "buildx_patch_evidence_missing"
+require_fixed .github/workflows/supply-chain.yml 'stat -c '\''%u:%g'\'' bin/network-plugin-manager' "output_ownership_gate_missing"
+require_fixed toolchain/buildx-security.patch '+	"crypto/rand"' "buildx_crypto_random_patch_missing"
+require_fixed toolchain/buildx-security.patch '-	"github.com/docker/docker/pkg/namesgenerator"' "buildx_namesgenerator_removal_missing"
+require_fixed scripts/entry 'trap restore_output_ownership EXIT' "output_ownership_trap_missing"
+require_fixed scripts/entry 'chown -R "$uid:$gid" "${outputs[@]}"' "targeted_output_chown_missing"
+reject_pattern scripts/entry 'chown -R .* \.' "checkout_wide_chown_present"
+reject_pattern scripts/entry 'exec ' "entry_exec_bypasses_cleanup"
+reject_pattern .github/workflows/supply-chain.yml 'sudo[[:space:]]+rm' "privileged_cleanup_present"
 reject_pattern .github/workflows/supply-chain.yml 'docker[[:space:]]+push|push:[[:space:]]+true|gh[[:space:]]+release|docker/login-action' "supply_chain_workflow_can_publish"
 
 while IFS= read -r workflow; do
@@ -228,4 +283,4 @@ if [ "$failures" -ne 0 ]; then
     exit 1
 fi
 
-echo "NETWORK_PLUGIN_MANAGER_BUILD_POLICY_OK go=1.26.6 docker=29.6.2 buildx=0.34.1 pinned_base=1 pinned_apt_snapshot=1 machine_readable_lock=1 dpkg_manifests=2 toolchain_manifests=2 reproducible_export=1 verified_downloads=1 sbom_trivy_gate=1 oci_provenance=1 ca_fetch=local_only"
+echo "NETWORK_PLUGIN_MANAGER_BUILD_POLICY_OK go=1.26.6 docker=29.7.2 buildx=0.36.1 pinned_base=1 exact_direct_apt=1 machine_readable_lock=2 source_built_tools=2 runtime_critical_high_zero=1 builder_vex_expiring=1 buildx_legacy_module_removed=1 reproducible_export=1 sbom_trivy_gate=1 oci_provenance=1 ca_fetch=local_only"

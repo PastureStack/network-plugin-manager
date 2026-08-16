@@ -1,30 +1,32 @@
 ARG SOURCE_DATE_EPOCH
-FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb AS snapshot-ca-bootstrap
+FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03 AS snapshot-ca-bootstrap
 ADD --checksum=sha256:6077d27c6b6f8b23590cb01ff877ed8c804a67a5442cc32b5a33da10d2bd0e90 \
-    https://snapshot.ubuntu.com/ubuntu/20260722T164940Z/pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb \
+    https://snapshot.ubuntu.com/ubuntu/20260808T000000Z/pool/main/c/ca-certificates/ca-certificates_20260601~26.04.1_all.deb \
     /tmp/ca-certificates.deb
 RUN dpkg-deb -x /tmp/ca-certificates.deb /tmp/ca-certificates && \
     cp /tmp/ca-certificates/usr/share/ca-certificates/mozilla/ISRG_Root_X1.crt /snapshot-ca.crt
 
-FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb
+FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
 COPY --from=snapshot-ca-bootstrap /snapshot-ca.crt /etc/ssl/certs/ca-certificates.crt
-COPY build-inputs.lock.tsv /usr/share/pasturestack/manifests/build-inputs.lock.tsv
+COPY build-inputs.lock.tsv ubuntu-apt.lock /usr/share/pasturestack/manifests/
 
 RUN rm -f /usr/bin/pebble
 
-ARG DOCKER_VERSION=29.6.2
-ARG DOCKER_LINUX_AMD64_SHA256=d6204aea92238e2453d5445c885b9d2e5eb8f82915568ec50edf9dbe12a3ac74
+ARG DOCKER_VERSION=29.7.2
+ARG DOCKER_CLI_SHA256
 ARG IMAGE_VERSION=dev
 ARG IMAGE_REVISION=unknown
 ARG IMAGE_CREATED=unknown
 ARG SOURCE_DATE_EPOCH
-ARG UBUNTU_SNAPSHOT=20260722T164940Z
+ARG UBUNTU_SNAPSHOT=20260808T000000Z
 ARG UBUNTU_SNAPSHOT_BASE=https://snapshot.ubuntu.com/ubuntu
 
 RUN set -eux; \
+    . /usr/share/pasturestack/manifests/ubuntu-apt.lock; \
     locked_snapshot="$(awk -F '\t' '$1 == "ubuntu_snapshot" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
     locked_snapshot_base="$(awk -F '\t' '$1 == "ubuntu_snapshot_base" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
     test "${UBUNTU_SNAPSHOT}" = "${locked_snapshot}"; \
+    test "${UBUNTU_SNAPSHOT}" = "${UBUNTU_APT_SNAPSHOT}"; \
     test "${UBUNTU_SNAPSHOT_BASE}" = "${locked_snapshot_base}"; \
     snapshot_uri="${UBUNTU_SNAPSHOT_BASE%/}/${UBUNTU_SNAPSHOT}"; \
     test "${snapshot_uri}" = "$(awk -F '\t' '$1 == "ubuntu_snapshot_uri" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
@@ -34,32 +36,19 @@ RUN set -eux; \
     printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAcquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";\nAcquire::https::Verify-Peer "true";\nAcquire::https::Verify-Host "true";\nAcquire::http::Pipeline-Depth "0";\nAcquire::AllowInsecureRepositories "false";\nAPT::Get::AllowUnauthenticated "false";\n' > /etc/apt/apt.conf.d/80pasturestack-retries; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bash \
-        ca-certificates \
-        conntrack \
-        curl \
-        gawk \
-        iproute2 \
-        iptables \
-        jq \
-        net-tools \
-        procps \
-        psmisc \
-        tar \
-        util-linux; \
-    test "${DOCKER_VERSION}" = "$(awk -F '\t' '$1 == "docker_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
-    test "${DOCKER_LINUX_AMD64_SHA256}" = "$(awk -F '\t' '$1 == "docker_linux_amd64_sha256" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
-    curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 --max-time 300 \
-        -o /tmp/docker.tgz "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz"; \
-    echo "${DOCKER_LINUX_AMD64_SHA256}  /tmp/docker.tgz" | sha256sum -c -; \
-    tar xzf /tmp/docker.tgz -C /usr/bin --strip-components=1 docker/docker; \
-    chmod +x /usr/bin/docker; \
-    rm -f /tmp/docker.tgz; \
-    docker_installed_sha="$(sha256sum /usr/bin/docker | awk '{ print $1 }')"; \
-    { \
-        printf 'component\tdeclared_version\ttarget\tinstalled_sha256\tinstalled_version\n'; \
-        printf 'docker\t%s\tlinux-amd64\t%s\t%s\n' "${DOCKER_VERSION}" "${docker_installed_sha}" "$(docker --version)"; \
-    } > /usr/share/pasturestack/manifests/runtime-toolchain.tsv; \
+        "bash=${UBUNTU_APT_BASH_VERSION}" \
+        "ca-certificates=${UBUNTU_APT_CA_CERTIFICATES_VERSION}" \
+        "conntrack=${UBUNTU_APT_CONNTRACK_VERSION}" \
+        "curl=${UBUNTU_APT_CURL_VERSION}" \
+        "gawk=${UBUNTU_APT_GAWK_VERSION}" \
+        "iproute2=${UBUNTU_APT_IPROUTE2_VERSION}" \
+        "iptables=${UBUNTU_APT_IPTABLES_VERSION}" \
+        "jq=${UBUNTU_APT_JQ_VERSION}" \
+        "net-tools=${UBUNTU_APT_NET_TOOLS_VERSION}" \
+        "procps=${UBUNTU_APT_PROCPS_VERSION}" \
+        "psmisc=${UBUNTU_APT_PSMISC_VERSION}" \
+        "tar=${UBUNTU_APT_TAR_VERSION}" \
+        "util-linux=${UBUNTU_APT_UTIL_LINUX_VERSION}"; \
     { \
         printf 'record\tname\tarchitecture\tversion\n'; \
         printf 'metadata\tschema\t-\tpasturestack.dpkg-manifest/v1\n'; \
@@ -69,6 +58,20 @@ RUN set -eux; \
     ln -s / /mnt/sda1; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*; \
     rm -f /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log /var/cache/ldconfig/aux-cache
+
+COPY bin/docker /usr/bin/docker
+COPY bin/docker-cli-go-version.txt /usr/share/pasturestack/manifests/docker-cli-go-version.txt
+RUN set -eux; \
+    test "${DOCKER_VERSION}" = "$(awk -F '\t' '$1 == "docker_version" { print $2 }' /usr/share/pasturestack/manifests/build-inputs.lock.tsv)"; \
+    test -n "${DOCKER_CLI_SHA256}"; \
+    chmod +x /usr/bin/docker; \
+    echo "${DOCKER_CLI_SHA256}  /usr/bin/docker" | sha256sum -c -; \
+    docker --version; \
+    docker_installed_sha="$(sha256sum /usr/bin/docker | awk '{ print $1 }')"; \
+    { \
+        printf 'component\tdeclared_version\ttarget\tinstalled_sha256\tinstalled_version\n'; \
+        printf 'docker\t%s\tlinux-%s\t%s\t%s\n' "${DOCKER_VERSION}" "$(dpkg --print-architecture)" "${docker_installed_sha}" "$(docker --version)"; \
+    } > /usr/share/pasturestack/manifests/runtime-toolchain.tsv
 
 COPY bin/network-plugin-manager package/start.sh package/platform-entrypoint.sh package/update-platform-ca /usr/bin/
 RUN sed -i 's/\r$//' /usr/bin/start.sh /usr/bin/platform-entrypoint.sh /usr/bin/update-platform-ca && \

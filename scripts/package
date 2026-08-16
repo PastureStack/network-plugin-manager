@@ -16,7 +16,7 @@ IMAGE=${REPO}/network-plugin-manager:${TAG}
 IMAGE_REVISION=${IMAGE_REVISION:-$(git rev-parse HEAD)}
 IMAGE_CREATED=${IMAGE_CREATED:-$(git show -s --format=%cI HEAD)}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}
-UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT:-20260722T164940Z}
+UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT:-20260808T000000Z}
 LOCKED_BUILDKIT_IMAGE=$(awk -F '\t' '$1 == "buildkit_image" { print $2 }' build-inputs.lock.tsv)
 BUILDKIT_IMAGE=${BUILDKIT_IMAGE:-${LOCKED_BUILDKIT_IMAGE}}
 test -n "${LOCKED_BUILDKIT_IMAGE}"
@@ -29,6 +29,11 @@ cleanup_builder() {
 trap cleanup_builder EXIT
 
 ./scripts/build
+install -D -m 0755 /usr/bin/docker bin/docker
+install -D -m 0644 \
+    /usr/share/pasturestack/manifests/docker-cli-go-version.txt \
+    bin/docker-cli-go-version.txt
+DOCKER_CLI_SHA256=$(sha256sum bin/docker | awk '{ print $1 }')
 
 docker buildx create \
     --name "${BUILDER_NAME}" \
@@ -48,6 +53,7 @@ docker buildx build \
     --build-arg IMAGE_CREATED="${IMAGE_CREATED}" \
     --build-arg SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
     --build-arg UBUNTU_SNAPSHOT="${UBUNTU_SNAPSHOT}" \
+    --build-arg DOCKER_CLI_SHA256="${DOCKER_CLI_SHA256}" \
     --output "type=docker,name=${IMAGE},rewrite-timestamp=true,compatibility-version=20" \
     -f package/Dockerfile \
     .

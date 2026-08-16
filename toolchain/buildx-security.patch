@@ -1,0 +1,51 @@
+--- a/store/util.go
++++ b/store/util.go
+@@ -3,8 +3,9 @@
+ import (
+-	"os"
+-	"regexp"
+-	"strings"
+-
+-	"github.com/docker/docker/pkg/namesgenerator"
+-	"github.com/pkg/errors"
++	"crypto/rand"
++	"encoding/hex"
++	"os"
++	"regexp"
++	"strings"
++
++	"github.com/pkg/errors"
+ )
+@@ -40,15 +40,19 @@
+ func GenerateName(txn *Txn) (string, error) {
+-	var name string
+-	for i := range 6 {
+-		name = namesgenerator.GetRandomName(i)
+-		if _, err := txn.NodeGroupByName(name); err != nil {
+-			if !os.IsNotExist(errors.Cause(err)) {
+-				return "", err
+-			}
+-		} else {
+-			continue
+-		}
+-		return name, nil
+-	}
+-	return "", errors.Errorf("failed to generate random name")
++	var name string
++	for range 6 {
++		random := make([]byte, 8)
++		if _, err := rand.Read(random); err != nil {
++			return "", errors.Wrap(err, "failed to generate random builder name")
++		}
++		name = "builder-" + hex.EncodeToString(random)
++		if _, err := txn.NodeGroupByName(name); err != nil {
++			if !os.IsNotExist(errors.Cause(err)) {
++				return "", err
++			}
++		} else {
++			continue
++		}
++		return name, nil
++	}
++	return "", errors.Errorf("failed to generate random name")
+ }

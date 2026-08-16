@@ -1,11 +1,11 @@
 .RECIPEPREFIX := >
 TARGETS := $(shell ls scripts)
 
-DAPPER_IMAGE ?= pasturestack-network-plugin-manager-dapper:go1.26.6-docker29.6.2-buildx0.34.1
+DAPPER_IMAGE ?= pasturestack-network-plugin-manager-dapper:go1.26.6-docker29.7.2-buildx0.36.1
 DAPPER_HOST_ARCH ?= amd64
-DOCKER_VERSION ?= 29.6.2
-BUILDX_VERSION ?= 0.34.1
-UBUNTU_SNAPSHOT ?= 20260722T164940Z
+DOCKER_VERSION ?= 29.7.2
+BUILDX_VERSION ?= 0.36.1
+UBUNTU_SNAPSHOT ?= 20260808T000000Z
 DAPPER_SOURCE ?= /go/src/github.com/PastureStack/network-plugin-manager
 
 .dapper:
