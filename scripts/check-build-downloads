@@ -116,6 +116,7 @@ require_lock_value docker_linux_arm64_sha256 '8d16d8b3b158c132a9fb9963d4b4345746
 require_lock_value buildx_version '0.34.1'
 require_lock_value buildx_linux_amd64_sha256 'f1332ddb9010bd0b72628266c3a906d9a6979848033df4c8d9bd2cd113bae12b'
 require_lock_value buildx_linux_arm64_sha256 'c34e32dd6ea2653d960d6c099c9f09b9077e4a37504d2d31e5066eccc3904231'
+require_lock_value buildkit_image 'moby/buildkit:buildx-stable-1@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8'
 
 require_pattern Dockerfile.dapper 'FROM ubuntu:26\.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb' "dapper_base_not_pinned"
 require_pattern Dockerfile.dapper 'ARG GO_VERSION=1\.26\.6' "go_version_not_current"
@@ -178,9 +179,12 @@ require_pattern scripts/package '--build-arg IMAGE_REVISION="\$\{IMAGE_REVISION\
 require_pattern scripts/package '--build-arg SOURCE_DATE_EPOCH="\$\{SOURCE_DATE_EPOCH\}"' "package_source_date_epoch_missing"
 require_pattern scripts/package '--build-arg UBUNTU_SNAPSHOT="\$\{UBUNTU_SNAPSHOT\}"' "package_ubuntu_snapshot_missing"
 require_fixed scripts/package 'export SOURCE_DATE_EPOCH' "buildkit_source_date_epoch_missing"
-require_pattern scripts/package '^[[:space:]]+--load[[:space:]]+\\$' "buildx_docker_load_missing"
-require_pattern scripts/package '^[[:space:]]+--tag "\$\{IMAGE\}"[[:space:]]+\\$' "buildx_image_tag_missing"
-reject_pattern scripts/package 'type=docker,dest=' "unsupported_docker_driver_exporter"
+require_fixed scripts/package 'docker buildx create \' "isolated_buildkit_builder_missing"
+require_fixed scripts/package '--driver docker-container \' "docker_container_driver_missing"
+require_fixed scripts/package '--driver-opt "image=${BUILDKIT_IMAGE}" \' "pinned_buildkit_driver_image_missing"
+require_fixed scripts/package 'docker buildx rm --force "${BUILDER_NAME}"' "buildkit_builder_cleanup_missing"
+require_fixed scripts/package '--output "type=docker,name=${IMAGE},rewrite-timestamp=true,compatibility-version=20" \' "reproducible_image_export_missing"
+reject_pattern scripts/package 'type=docker,dest=' "unsupported_docker_driver_archive_exporter"
 
 require_pattern package/update-platform-ca 'PLATFORM_CA_ROOT:-/var/lib/pasturestack/etc/ssl/ca\.crt' "platform_ca_root_missing"
 require_pattern package/update-platform-ca 'legacy_ca_root="/var/lib/rancher/etc/ssl/ca\.crt"' "legacy_ca_fallback_missing"

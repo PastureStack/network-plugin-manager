@@ -17,20 +17,38 @@ IMAGE_REVISION=${IMAGE_REVISION:-$(git rev-parse HEAD)}
 IMAGE_CREATED=${IMAGE_CREATED:-$(git show -s --format=%cI HEAD)}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git show -s --format=%ct HEAD)}
 UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT:-20260722T164940Z}
+LOCKED_BUILDKIT_IMAGE=$(awk -F '\t' '$1 == "buildkit_image" { print $2 }' build-inputs.lock.tsv)
+BUILDKIT_IMAGE=${BUILDKIT_IMAGE:-${LOCKED_BUILDKIT_IMAGE}}
+test -n "${LOCKED_BUILDKIT_IMAGE}"
+test "${BUILDKIT_IMAGE}" = "${LOCKED_BUILDKIT_IMAGE}"
+BUILDER_NAME="pasturestack-network-plugin-manager-${DAPPER_UID:-0}-$$"
+
+cleanup_builder() {
+    docker buildx rm --force "${BUILDER_NAME}" >/dev/null 2>&1 || true
+}
+trap cleanup_builder EXIT
 
 ./scripts/build
 
+docker buildx create \
+    --name "${BUILDER_NAME}" \
+    --driver docker-container \
+    --driver-opt "image=${BUILDKIT_IMAGE}" \
+    --driver-opt network=host \
+    --use >/dev/null
+docker buildx inspect --builder "${BUILDER_NAME}" --bootstrap >/dev/null
+
 export SOURCE_DATE_EPOCH
 docker buildx build \
+    --builder "${BUILDER_NAME}" \
     --provenance=false \
-    --load \
-    --tag "${IMAGE}" \
     --network "${DOCKER_BUILD_NETWORK:-host}" \
     --build-arg IMAGE_VERSION="${TAG}" \
     --build-arg IMAGE_REVISION="${IMAGE_REVISION}" \
     --build-arg IMAGE_CREATED="${IMAGE_CREATED}" \
     --build-arg SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH}" \
     --build-arg UBUNTU_SNAPSHOT="${UBUNTU_SNAPSHOT}" \
+    --output "type=docker,name=${IMAGE},rewrite-timestamp=true,compatibility-version=20" \
     -f package/Dockerfile \
     .
 printf '%s\n' "${IMAGE}" > dist/images
