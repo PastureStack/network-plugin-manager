@@ -12,8 +12,7 @@ import (
 	"github.com/PastureStack/network-plugin-manager/conntracksync/conntrack"
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/docker/engine-api/client"
-	"github.com/pkg/errors"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -102,7 +101,7 @@ func (w *watcher) insertBaseRules() error {
 		}
 	}
 	if len(errs) > 0 {
-		return errors.Errorf("failed to insert hostnat base rules: %s", strings.Join(errs, "; "))
+		return fmt.Errorf("failed to insert hostnat base rules: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -299,7 +298,7 @@ func (w *watcher) apply(rules ruleSet) error {
 	}
 
 	if err := w.insertBaseRules(); err != nil {
-		return errors.Wrap(err, "Installing base rules")
+		return fmt.Errorf("install base rules: %w", err)
 	}
 
 	if len(rules.IKE) > 0 {

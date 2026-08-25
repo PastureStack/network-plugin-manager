@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${root_dir}"
+
+manifest=LICENSES/modules.tsv
+[[ -s "${manifest}" ]] || { echo 'LICENSE manifest is missing' >&2; exit 1; }
+
+work="$(mktemp -d)"
+trap 'rm -rf "${work}"' EXIT
+awk '/^# / && NF == 3 {print $2 "\t" $3}' vendor/modules.txt | LC_ALL=C sort -u > "${work}/expected"
+tail -n +2 "${manifest}" | cut -f1,2 | LC_ALL=C sort -u > "${work}/actual"
+cmp "${work}/expected" "${work}/actual"
+
+count=0
+while IFS=$'\t' read -r module version file expected_sha; do
+    if [[ "${module}" == module ]]; then
+        [[ "${version}" == version && "${file}" == file && "${expected_sha}" == sha256 ]] || exit 1
+        continue
+    fi
+    [[ "${file}" =~ ^[A-Za-z0-9._-]+$ && -f "LICENSES/${file}" ]] || exit 1
+    actual_sha="$(sha256sum "LICENSES/${file}" | cut -d' ' -f1)"
+    [[ "${actual_sha}" == "${expected_sha}" ]] || exit 1
+    count=$((count + 1))
+done < "${manifest}"
+
+[[ "${count}" -ge 28 ]] || exit 1
+printf 'NETWORK_PLUGIN_MANAGER_LICENSES_OK modules=%s files=%s\n' "$(wc -l < "${work}/expected")" "${count}"

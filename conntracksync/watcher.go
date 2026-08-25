@@ -8,7 +8,7 @@ import (
 	"github.com/PastureStack/network-plugin-manager/conntracksync/conntrack"
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/docker/engine-api/client"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 

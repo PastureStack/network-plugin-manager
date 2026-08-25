@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/docker/engine-api/client"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,7 +24,7 @@ func TestDoSync(t *testing.T) {
 		logrus.Errorf("error creating metadata client")
 		t.Fail()
 	}
-	dClient, err := client.NewEnvClient()
+	dClient, err := client.New(client.FromEnv)
 	if err != nil {
 		logrus.Errorf("err=%v", err)
 		t.Fail()

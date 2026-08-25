@@ -2,13 +2,14 @@ package reaper
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/docker/engine-api/client"
-	"github.com/docker/engine-api/types"
+	"github.com/containerd/errdefs"
 	"github.com/jpillora/backoff"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -86,7 +87,7 @@ func (w *watcher) onChange(version string) error {
 }
 
 func CheckMetadata(dockerClient *client.Client, first bool) error {
-	containers, err := dockerClient.ContainerList(context.Background(), types.ContainerListOptions{
+	result, err := dockerClient.ContainerList(context.Background(), client.ContainerListOptions{
 		All: true,
 	})
 	if err != nil {
@@ -95,12 +96,12 @@ func CheckMetadata(dockerClient *client.Client, first bool) error {
 
 	metadataIds := []string{}
 	dnsIds := []string{}
-	for _, container := range containers {
-		if container.Labels[uuidLabel] != "" && container.Labels[serviceNameLabel] == metadataService {
-			metadataIds = append(metadataIds, container.ID)
+	for _, summary := range result.Items {
+		if summary.Labels[uuidLabel] != "" && summary.Labels[serviceNameLabel] == metadataService {
+			metadataIds = append(metadataIds, summary.ID)
 		}
-		if container.Labels[uuidLabel] != "" && container.Labels[serviceNameLabel] == dnsService {
-			dnsIds = append(dnsIds, container.ID)
+		if summary.Labels[uuidLabel] != "" && summary.Labels[serviceNameLabel] == dnsService {
+			dnsIds = append(dnsIds, summary.ID)
 		}
 	}
 
@@ -112,13 +113,16 @@ func CheckMetadata(dockerClient *client.Client, first bool) error {
 	} else if len(dnsIds) > 1 {
 		toDelete = append(toDelete, dnsIds...)
 	} else if first && len(dnsIds) == 1 {
-		dnsContainer, err := dockerClient.ContainerInspect(context.Background(), dnsIds[0])
+		dnsResult, err := dockerClient.ContainerInspect(context.Background(), dnsIds[0], client.ContainerInspectOptions{})
 		if err != nil {
 			return err
 		}
-		id := dnsContainer.HostConfig.NetworkMode.ConnectedContainer()
-		_, err = dockerClient.ContainerInspect(context.Background(), id)
-		if client.IsErrContainerNotFound(err) {
+		if dnsResult.Container.HostConfig == nil {
+			return fmt.Errorf("DNS container %s has no host configuration", dnsIds[0])
+		}
+		id := dnsResult.Container.HostConfig.NetworkMode.ConnectedContainer()
+		_, err = dockerClient.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
+		if errdefs.IsNotFound(err) {
 			logrus.Errorf("Failed to find network container [%s] for DNS %s", id, dnsIds[0])
 			toDelete = append(toDelete, dnsIds...)
 		}
@@ -126,7 +130,7 @@ func CheckMetadata(dockerClient *client.Client, first bool) error {
 
 	for _, id := range toDelete {
 		logrus.Infof("Deleting duplicate metadata/dns service: %s", id)
-		err := dockerClient.ContainerRemove(context.Background(), id, types.ContainerRemoveOptions{
+		_, err := dockerClient.ContainerRemove(context.Background(), id, client.ContainerRemoveOptions{
 			Force: true,
 		})
 		if err != nil {
@@ -139,7 +143,7 @@ func CheckMetadata(dockerClient *client.Client, first bool) error {
 
 func (w *watcher) removeContainer(container metadata.Container) {
 	logrus.Infof("Removing unmanaged container %s %s", container.Name, container.ExternalId)
-	err := w.dc.ContainerRemove(context.Background(), container.ExternalId, types.ContainerRemoveOptions{
+	_, err := w.dc.ContainerRemove(context.Background(), container.ExternalId, client.ContainerRemoveOptions{
 		Force: true,
 	})
 	if err != nil {

@@ -4,15 +4,15 @@ import (
 	"reflect"
 	"testing"
 
-	docker "github.com/fsouza/go-dockerclient"
+	"github.com/moby/moby/api/types/container"
 )
 
 func TestGetDNSSearchUsesPastureDomain(t *testing.T) {
-	container := &docker.Container{
-		Config: &docker.Config{Labels: map[string]string{
+	container := &container.InspectResponse{
+		Config: &container.Config{Labels: map[string]string{
 			"io.rancher.stack_service.name": "application/service",
 		}},
-		HostConfig: &docker.HostConfig{DNSSearch: []string{"example.test"}},
+		HostConfig: &container.HostConfig{DNSSearch: []string{"example.test"}},
 	}
 
 	actual := getDNSSearch(container)
@@ -28,11 +28,11 @@ func TestGetDNSSearchUsesPastureDomain(t *testing.T) {
 }
 
 func TestGetDNSSearchIgnoresMalformedServiceLabel(t *testing.T) {
-	container := &docker.Container{
-		Config: &docker.Config{Labels: map[string]string{
+	container := &container.InspectResponse{
+		Config: &container.Config{Labels: map[string]string{
 			"io.rancher.stack_service.name": "missing-separator",
 		}},
-		HostConfig: &docker.HostConfig{},
+		HostConfig: &container.HostConfig{},
 	}
 
 	actual := getDNSSearch(container)

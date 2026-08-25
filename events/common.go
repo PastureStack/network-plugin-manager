@@ -1,9 +1,11 @@
 package events
 
 import (
-	"github.com/fsouza/go-dockerclient"
+	"context"
+
+	"github.com/moby/moby/client"
 )
 
 type SimpleDockerClient interface {
-	InspectContainer(id string) (*docker.Container, error)
+	ContainerInspect(context.Context, string, client.ContainerInspectOptions) (client.ContainerInspectResult, error)
 }

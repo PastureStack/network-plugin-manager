@@ -1,12 +1,11 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd $(dirname $0)/..
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${root_dir}"
 
-echo Running tests
-
-PACKAGES=". $(find -name '*.go' | xargs -I{} dirname {} |  cut -f2 -d/ | sort -u | grep -Ev '(^\.$|.git|vendor|bin)' | sed -e 's!^!./!' -e 's!$!/...!')"
-
-[ "${ARCH}" == "amd64" ] && RACE=-race
-go test ${RACE} -cover -tags=test ${PACKAGES}
-go test ${RACE} -cover -tags=test ./vendor/github.com/rancher/cniglue
+race=()
+if [[ "${ARCH:-$(go env GOARCH)}" == amd64 ]]; then
+    race=(-race)
+fi
+go test -mod=vendor "${race[@]}" -cover -tags=test ./...

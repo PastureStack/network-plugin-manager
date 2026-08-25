@@ -3,24 +3,24 @@ package binexec
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/cniglue"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/docker/engine-api/client"
-	docker "github.com/fsouza/go-dockerclient"
-	"github.com/rancher/cniglue"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
 var (
 	reapplyEvery = 5 * time.Minute
-	binDir       = glue.CniPath[0]
+	binDir       = cniglue.CniPath[0]
 )
 
 func Watch(c metadata.Client, dc *client.Client) *Watcher {
@@ -48,12 +48,12 @@ func (w *Watcher) onChangeNoError(version string) {
 	}
 }
 
-func (w *Watcher) Handle(event *docker.APIEvents) error {
+func (w *Watcher) Handle(event *events.Message) error {
 	w.Lock()
 
 	changed := false
 	for _, v := range w.applied {
-		if v == event.ID {
+		if v == event.Actor.ID {
 			changed = true
 			break
 		}
@@ -130,17 +130,33 @@ func (w *Watcher) apply(binaries map[string]string) error {
 		logrus.Infof("Setting up binaries for: %v", binaries)
 	}
 
-	script := `#!/bin/sh
-target="%s"
-service_label="%s"
+	const script = `#!/bin/sh
+set -eu
+target=%s
+service_label=%s
+socket=/var/run/docker.sock
+api_prefix=""
+if [ -n "${DOCKER_API_VERSION:-}" ]; then
+    case "${DOCKER_API_VERSION}" in
+        *[!0-9.]*|'') echo '{"code":100,"msg":"invalid Docker API version"}' >&2; exit 1 ;;
+    esac
+    api_prefix="/v${DOCKER_API_VERSION}"
+fi
 cid=""
 if [ -n "${service_label}" ]; then
-    cid="$(docker ps -q --filter "label=io.rancher.stack_service.name=${service_label}" | head -n 1)"
+    filters="$(jq -cn --arg label "io.rancher.stack_service.name=${service_label}" '{label:[$label]}')"
+    cid="$(curl -fsS --max-time 10 --unix-socket "${socket}" --get \
+        --data-urlencode "filters=${filters}" \
+        "http://localhost${api_prefix}/containers/json" | jq -r '.[0].Id // empty')"
 fi
 if [ -z "${cid}" ]; then
     cid="${target}"
 fi
-pid="$(docker inspect -f '{{.State.Pid}}' "${cid}" 2>/dev/null || true)"
+case "${cid}" in
+    *[!0-9a-fA-F]*|'') echo '{"code":100,"msg":"invalid CNI driver container id"}' >&2; exit 1 ;;
+esac
+pid="$(curl -fsS --max-time 10 --unix-socket "${socket}" \
+    "http://localhost${api_prefix}/containers/${cid}/json" | jq -r '.State.Pid // 0' || true)"
 if [ -z "${pid}" ] || [ "${pid}" = "0" ]; then
     echo "{\"code\":100,\"msg\":\"cni driver container not running: ${service_label:-${target}}\"}" >&2
     exit 1
@@ -152,12 +168,13 @@ exec /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- $0 "$@"
 
 	var lastErr error
 	for name, target := range binaries {
-		container, err := w.dc.ContainerInspect(context.Background(), target)
+		inspectResult, err := w.dc.ContainerInspect(context.Background(), target, client.ContainerInspectOptions{})
 		if err != nil {
 			lastErr = err
 			break
 		}
 
+		container := inspectResult.Container
 		if container.State == nil || container.State.Pid == 0 {
 			lastErr = fmt.Errorf("container is not running")
 			break
@@ -170,9 +187,9 @@ exec /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- $0 "$@"
 
 		ptmp := filepath.Join(binDir, name+".tmp")
 		p := filepath.Join(binDir, name)
-		content := []byte(fmt.Sprintf(script, target, serviceLabel))
+		content := []byte(fmt.Sprintf(script, shellQuote(target), shellQuote(serviceLabel)))
 		logrus.Debugf("Writing %s:\n%s", p, content)
-		if err := ioutil.WriteFile(ptmp, content, 0700); err != nil {
+		if err := os.WriteFile(ptmp, content, 0700); err != nil {
 			lastErr = err
 			break
 		}
@@ -188,6 +205,10 @@ exec /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- $0 "$@"
 	}
 
 	return lastErr
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func getBinaryName(container metadata.Container) string {

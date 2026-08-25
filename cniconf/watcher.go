@@ -4,16 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
 	"time"
 
 	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/cniglue"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/docker/engine-api/client"
-	"github.com/rancher/cniglue"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,7 +22,7 @@ var (
 )
 
 func init() {
-	glue.CniDir = cniDir
+	cniglue.CniDir = cniDir
 }
 
 func Watch(c metadata.Client, dc *client.Client) error {
@@ -147,7 +146,7 @@ func (w *watcher) apply(network metadata.Network) error {
 		}
 
 		logrus.Debugf("Writing %s: %s", p, out)
-		if err := ioutil.WriteFile(p, out.Bytes(), 0600); err != nil {
+		if err := os.WriteFile(p, out.Bytes(), 0600); err != nil {
 			lastErr = err
 		}
 	}

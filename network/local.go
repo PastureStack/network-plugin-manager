@@ -6,25 +6,24 @@ import (
 
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/containernetworking/cni/pkg/ns"
-	"github.com/docker/engine-api/client"
-	"github.com/pkg/errors"
+	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/moby/moby/client"
 )
 
 func LocalNetworks(mc metadata.Client, dc *client.Client) ([]metadata.Network, map[string]metadata.Container, error) {
 	networks, err := mc.GetNetworks()
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "error fetching networks from metadata")
+		return nil, nil, fmt.Errorf("fetch networks from metadata: %w", err)
 	}
 
 	hostUUID, err := identity.LocalHostUUID(mc, dc)
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "error fetching local host uuid")
+		return nil, nil, fmt.Errorf("fetch local host UUID: %w", err)
 	}
 
 	services, err := mc.GetServices()
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "error fetching services from metadata")
+		return nil, nil, fmt.Errorf("fetch services from metadata: %w", err)
 	}
 
 	localNetworks := map[string]bool{}
@@ -63,12 +62,12 @@ func LocalNetworks(mc metadata.Client, dc *client.Client) ([]metadata.Network, m
 func ForEachContainerNS(dc *client.Client, mc metadata.Client, networkUUID string, f func(metadata.Container, ns.NetNS) error) error {
 	hostUUID, err := identity.LocalHostUUID(mc, dc)
 	if err != nil {
-		return errors.Wrap(err, "error fetching local host uuid")
+		return fmt.Errorf("fetch local host UUID: %w", err)
 	}
 
 	containers, err := mc.GetContainers()
 	if err != nil {
-		return errors.Wrap(err, "error fetching containers from metadata")
+		return fmt.Errorf("fetch containers from metadata: %w", err)
 	}
 
 	var lastError error
@@ -94,15 +93,16 @@ func ForEachContainerNS(dc *client.Client, mc metadata.Client, networkUUID strin
 }
 
 func EnterNS(dc *client.Client, dockerID string, f func(ns.NetNS) error) error {
-	inspect, err := dc.ContainerInspect(context.Background(), dockerID)
+	inspectResult, err := dc.ContainerInspect(context.Background(), dockerID, client.ContainerInspectOptions{})
 	if err != nil {
-		return errors.Wrapf(err, "inspecting container: %v", dockerID)
+		return fmt.Errorf("inspect container %s: %w", dockerID, err)
 	}
+	inspect := inspectResult.Container
 
 	containerNSStr := fmt.Sprintf("/proc/%v/ns/net", inspect.State.Pid)
 	netns, err := ns.GetNS(containerNSStr)
 	if err != nil {
-		return errors.Wrapf(err, "failed to open netns %v", containerNSStr)
+		return fmt.Errorf("open network namespace %s: %w", containerNSStr, err)
 	}
 	defer netns.Close()
 
@@ -110,7 +110,7 @@ func EnterNS(dc *client.Client, dockerID string, f func(ns.NetNS) error) error {
 		return f(n)
 	})
 	if err != nil {
-		return errors.Wrapf(err, "in name ns for container %s", dockerID)
+		return fmt.Errorf("run in network namespace for container %s: %w", dockerID, err)
 	}
 
 	return nil

@@ -8,9 +8,8 @@ import (
 
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/PastureStack/network-plugin-manager/network"
-	"github.com/containernetworking/cni/pkg/ns"
-	"github.com/docker/engine-api/client"
-	"github.com/pkg/errors"
+	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
@@ -64,7 +63,7 @@ func (ms *MACSyncer) doSync() (bool, error) {
 
 	networks, routers, err := network.LocalNetworks(ms.mc, ms.dc)
 	if err != nil {
-		return didSomething, errors.Wrap(err, "getting local networks")
+		return didSomething, fmt.Errorf("get local networks: %w", err)
 	}
 
 	var lastError error

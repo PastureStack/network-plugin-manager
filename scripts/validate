@@ -1,19 +1,16 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-cd $(dirname $0)/..
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${root_dir}"
 
-echo Running validation
-
-PACKAGES=". $(find -name '*.go' | xargs -I{} dirname {} |  cut -f2 -d/ | sort -u | grep -Ev '(^\.$|.git|vendor|bin)' | sed -e 's!^!./!' -e 's!$!/...!')"
-
-echo Running: go vet
-go vet ${PACKAGES}
-printf "%s\n" "Running supported validation: go vet and gofmt."
-echo Running: gofmt
-unformatted="$(find . -name '*.go' -not -path './.git/*' -not -path './vendor/*' -print0 \
-    | xargs -0 -r gofmt -l -s)"
-if [ -n "$unformatted" ]; then
-    printf '%s\n' "$unformatted" >&2
+go mod verify
+go list -mod=vendor ./... >/dev/null
+go vet -mod=vendor ./...
+unformatted="$(find . -name '*.go' -not -path './.git/*' -not -path './vendor/*' -print0 | xargs -0 -r gofmt -l -s)"
+if [[ -n "${unformatted}" ]]; then
+    printf '%s\n' "${unformatted}" >&2
     exit 1
 fi
+./scripts/check-build-downloads
+printf 'Validation passed: modules, vendor, vet, formatting, and bounded supply-chain policy.\n'

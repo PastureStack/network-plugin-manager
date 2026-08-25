@@ -1,6 +1,7 @@
 package arpsync
 
 import (
+	"fmt"
 	"net"
 	"strconv"
 	"time"
@@ -8,9 +9,8 @@ import (
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/PastureStack/network-plugin-manager/network"
-	"github.com/containernetworking/cni/pkg/ns"
-	"github.com/docker/engine-api/client"
-	"github.com/pkg/errors"
+	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
@@ -89,18 +89,18 @@ func buildContainersMap(containers []metadata.Container,
 func (atw *ARPTableWatcher) doSync() error {
 	host, err := identity.LocalHost(atw.mc, atw.dc)
 	if err != nil {
-		return errors.Wrap(err, "get local host")
+		return fmt.Errorf("get local host: %w", err)
 	}
 
 	containers, err := atw.mc.GetContainers()
 	if err != nil {
-		return errors.Wrap(err, "error fetching containers from metadata")
+		return fmt.Errorf("fetch containers from metadata: %w", err)
 	}
 
 	var lastError error
 	localNetworks, routers, err := network.LocalNetworks(atw.mc, atw.dc)
 	if err != nil {
-		return errors.Wrap(err, "get local networks")
+		return fmt.Errorf("get local networks: %w", err)
 	}
 
 	for _, localNetwork := range localNetworks {
@@ -110,7 +110,7 @@ func (atw *ARPTableWatcher) doSync() error {
 
 		containersMap, err := buildContainersMap(containers, localNetwork)
 		if err != nil {
-			return errors.Wrap(err, "building containers map")
+			return fmt.Errorf("build containers map: %w", err)
 		}
 
 		networkDriverMacAddress := routers[localNetwork.UUID].PrimaryMacAddress
@@ -257,7 +257,7 @@ func localInterfaceIPs() map[string]bool {
 func addARPEntry(context string, ipAddress string, macAddress string) error {
 	ip := net.ParseIP(ipAddress)
 	if ip == nil {
-		return errors.Errorf("invalid IP address %s", ipAddress)
+		return fmt.Errorf("invalid IP address %s", ipAddress)
 	}
 
 	hwAddr, err := net.ParseMAC(macAddress)
@@ -272,7 +272,7 @@ func addARPEntry(context string, ipAddress string, macAddress string) error {
 		return err
 	}
 	if len(routes) == 0 {
-		return errors.Errorf("no route found for missing ARP entry %s", ipAddress)
+		return fmt.Errorf("no route found for missing ARP entry %s", ipAddress)
 	}
 
 	newEntry := netlink.Neigh{

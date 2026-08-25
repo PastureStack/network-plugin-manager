@@ -14,8 +14,7 @@ import (
 
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/docker/engine-api/client"
-	"github.com/pkg/errors"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -148,7 +147,7 @@ func (w *watcher) insertBaseRules() error {
 		}
 	}
 	if len(errs) > 0 {
-		return errors.Errorf("failed to insert hostport base rules: %s", strings.Join(errs, "; "))
+		return fmt.Errorf("failed to insert hostport base rules: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -342,7 +341,7 @@ func (w *watcher) apply(rules ruleSet) error {
 	}
 
 	if err := w.insertBaseRules(); err != nil {
-		return errors.Wrap(err, "Applying port base iptables rules")
+		return fmt.Errorf("apply port base iptables rules: %w", err)
 	}
 
 	w.applied = rules

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -16,49 +17,51 @@ import (
 	"github.com/PastureStack/network-plugin-manager/network"
 	"github.com/PastureStack/network-plugin-manager/reaper"
 	"github.com/PastureStack/network-plugin-manager/routesync"
-	"github.com/docker/engine-api/client"
-	"github.com/pkg/errors"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v3"
 )
 
 // VERSION of the binary, that can be changed during build
 var VERSION = "v0.0.0-dev"
 
 func main() {
-	app := cli.NewApp()
-	app.Name = "network-plugin-manager"
-	app.Version = VERSION
-	app.Flags = []cli.Flag{
-		cli.StringFlag{
-			Name:  "metadata-url",
-			Value: "http://metadata/2016-07-29",
+	app := &cli.Command{
+		Name:    "network-plugin-manager",
+		Version: VERSION,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:  "metadata-url",
+				Value: "http://metadata/2016-07-29",
+			},
+			&cli.StringFlag{
+				Name:  "conntracksync-interval",
+				Usage: fmt.Sprintf("Customize the interval of conntracksync in seconds (default: %v)", conntracksync.DefaultSyncInterval),
+				Value: "",
+			},
+			&cli.StringFlag{
+				Name:  "routesync-interval",
+				Usage: fmt.Sprintf("Customize the interval of routesync in seconds (default: %v)", routesync.DefaultSyncInterval),
+				Value: "",
+			},
+			&cli.StringFlag{
+				Name:  "arpsync-interval",
+				Usage: fmt.Sprintf("Customize the interval of arpsync in seconds (default: %v)", arpsync.DefaultSyncInterval),
+				Value: "",
+			},
+			&cli.BoolFlag{
+				Name:  "debug",
+				Usage: "Turn on debug logging",
+			},
 		},
-		cli.StringFlag{
-			Name:  "conntracksync-interval",
-			Usage: fmt.Sprintf("Customize the interval of conntracksync in seconds (default: %v)", conntracksync.DefaultSyncInterval),
-			Value: "",
-		},
-		cli.StringFlag{
-			Name:  "routesync-interval",
-			Usage: fmt.Sprintf("Customize the interval of routesync in seconds (default: %v)", routesync.DefaultSyncInterval),
-			Value: "",
-		},
-		cli.StringFlag{
-			Name:  "arpsync-interval",
-			Usage: fmt.Sprintf("Customize the interval of arpsync in seconds (default: %v)", arpsync.DefaultSyncInterval),
-			Value: "",
-		},
-		cli.BoolFlag{
-			Name:  "debug",
-			Usage: "Turn on debug logging",
-		},
+		Action: run,
 	}
-	app.Action = run
-	app.Run(os.Args)
+	if err := app.Run(context.Background(), os.Args); err != nil {
+		logrus.Fatal(err)
+	}
 }
 
-func run(c *cli.Context) error {
+func run(_ context.Context, c *cli.Command) error {
 	if c.Bool("debug") {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
@@ -68,7 +71,7 @@ func run(c *cli.Context) error {
 		return err
 	}
 
-	dClient, err := client.NewEnvClient()
+	dClient, err := client.New(client.FromEnv)
 	if err != nil {
 		return err
 	}
@@ -78,7 +81,7 @@ func run(c *cli.Context) error {
 	logrus.Infof("Waiting for metadata")
 	mClient, err := metadata.NewClientAndWait(c.String("metadata-url"))
 	if err != nil {
-		return errors.Wrap(err, "Creating metadata client")
+		return fmt.Errorf("create metadata client: %w", err)
 	}
 
 	macsync.SyncMACAddresses(mClient, dClient)
@@ -114,7 +117,7 @@ func run(c *cli.Context) error {
 
 	binWatcher := binexec.Watch(mClient, dClient)
 
-	if err := events.Watch(100, manager, binWatcher); err != nil {
+	if err := events.Watch(100, dClient, manager, binWatcher); err != nil {
 		return err
 	}
 

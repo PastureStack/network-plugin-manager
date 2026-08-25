@@ -1,7 +1,5 @@
 bin/*
 !bin/network-plugin-manager
-!bin/docker
-!bin/docker-cli-go-version.txt
 .dapper
 dist
 .trash-cache

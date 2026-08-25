@@ -20,9 +20,9 @@ The primary executable is `network-plugin-manager`. Its default metadata endpoin
 
 ## Build and test
 
-The reviewed build uses Go 1.26.6, Docker CLI 29.7.2, and Docker Buildx 0.36.1. Docker CLI and Buildx are compiled from the commits referenced by verified upstream release tags; their source archives are SHA-256 locked. Docker CLI 29.7.2 supplies `golang.org/x/text` 0.40.0 and gRPC-Go 1.82.1 without a local dependency patch. Buildx carries a checksum-locked patch that replaces its sole compiled dependency on the legacy Docker module with cryptographically random builder names. The same verified Docker CLI binary is copied into the runtime image.
+The maintained source uses Go Modules with Go 1.27.0, Moby API 1.55.0/client 0.5.1, CNI 1.3.0, and CNI plugins 1.9.1. The old 2016 Docker Engine API, fsouza event client, Rancher cniglue/event-subscriber helpers, and GOPATH dependency path are no longer compiled. The runtime talks to the mounted Docker socket through the bounded Moby client and two small `curl`/`jq` compatibility calls; it no longer bundles a second Docker CLI.
 
-The Ubuntu base image is digest-pinned. Direct packages are exact-version locked in `ubuntu-apt.lock` against the immutable `20260808T000000Z` Ubuntu snapshot, while complete resolved `dpkg` manifests are retained as build evidence. The image exporter normalizes file timestamps to the source commit time.
+The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-version locked in `alpine-apk.lock`, and the complete resolved APK manifest is retained in the image as build evidence. The runtime no longer inherits Ubuntu's unrelated `rust-coreutils` and system package vulnerability surface. The image exporter normalizes file timestamps to the source commit time.
 
 ```bash
 make test
@@ -31,15 +31,7 @@ bash scripts/check-build-downloads
 VERSION_OVERRIDE=v0.6.34 IMAGE_NAMESPACE=pasturestack make package
 ```
 
-Pull requests and `main` run a non-publishing supply-chain workflow. It rebuilds
-the runtime image without cache, compares the resulting binary and image
-digests, verifies the embedded build-input, toolchain, and resolved `dpkg`
-manifests, and generates CycloneDX and Trivy evidence retained for 30 days.
-Source and runtime artifacts must contain no Critical or High findings. The disposable builder permits only scanner-identified, unfixed `linux-libc-dev` findings under an exact-package OpenVEX assessment that proves the kernel implementation is absent from the runtime image and expires on 2026-09-15; every other builder finding fails the gate.
-The workflow also verifies that the patched Buildx binary does not record the
-legacy Docker module and that the embedded patch matches the reviewed source
-input byte for byte.
-Publishing remains a separate, explicitly authorized operation.
+Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.
 
 ## Compatibility and security
 

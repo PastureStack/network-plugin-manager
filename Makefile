@@ -1,11 +1,8 @@
 .RECIPEPREFIX := >
 TARGETS := $(shell ls scripts)
 
-DAPPER_IMAGE ?= pasturestack-network-plugin-manager-dapper:go1.26.6-docker29.7.2-buildx0.36.1
+DAPPER_IMAGE ?= pasturestack-network-plugin-manager-dapper:go1.27.0
 DAPPER_HOST_ARCH ?= amd64
-DOCKER_VERSION ?= 29.7.2
-BUILDX_VERSION ?= 0.36.1
-UBUNTU_SNAPSHOT ?= 20260808T000000Z
 DAPPER_SOURCE ?= /go/src/github.com/PastureStack/network-plugin-manager
 
 .dapper:
@@ -13,9 +10,6 @@ DAPPER_SOURCE ?= /go/src/github.com/PastureStack/network-plugin-manager
 >  --pull \
 >  --network "$${DOCKER_BUILD_NETWORK:-host}" \
 >  --build-arg DAPPER_HOST_ARCH=$(DAPPER_HOST_ARCH) \
->  --build-arg DOCKER_VERSION=$(DOCKER_VERSION) \
->  --build-arg BUILDX_VERSION=$(BUILDX_VERSION) \
->  --build-arg UBUNTU_SNAPSHOT=$(UBUNTU_SNAPSHOT) \
 >  -t $(DAPPER_IMAGE) \
 >  -f Dockerfile.dapper .
 

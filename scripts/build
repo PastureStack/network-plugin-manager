@@ -1,14 +1,12 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-source $(dirname $0)/version
-
-cd $(dirname $0)/..
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root_dir="$(cd "${script_dir}/.." && pwd)"
+source "${script_dir}/version"
+cd "${root_dir}"
 
 mkdir -p bin
-[ "$(uname)" != "Darwin" ] && LINKFLAGS="-s -w"
-CGO_ENABLED=0 go build \
-    -trimpath \
-    -buildvcs=false \
-    -ldflags "-buildid= -X main.VERSION=$VERSION $LINKFLAGS" \
-    -o bin/network-plugin-manager
+CGO_ENABLED=0 go build -mod=vendor -trimpath -buildvcs=false \
+    -ldflags "-buildid= -s -w -X main.VERSION=${VERSION}" \
+    -o bin/network-plugin-manager .

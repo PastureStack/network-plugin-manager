@@ -3,12 +3,14 @@ package events
 import (
 	"bufio"
 	"bytes"
-	"io/ioutil"
+	"context"
 	"os"
 	"strings"
 
-	"github.com/fsouza/go-dockerclient"
-	"github.com/rancher/event-subscriber/locks"
+	"github.com/PastureStack/network-plugin-manager/internal/trylock"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/client"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -25,7 +27,7 @@ type StartHandler struct {
 	Client SimpleDockerClient
 }
 
-func getDNSSearch(container *docker.Container) []string {
+func getDNSSearch(container *container.InspectResponse) []string {
 	var defaultDomains []string
 	var svcNameSpace string
 	var stackNameSpace string
@@ -59,7 +61,7 @@ func getDNSSearch(container *docker.Container) []string {
 	return defaultDomains
 }
 
-func setupResolvConf(container *docker.Container) error {
+func setupResolvConf(container *container.InspectResponse) error {
 	log.Debugf("Setting up resolver configuration for container %s", container.ID)
 	if container.ResolvConfPath == "/etc/resolv.conf" {
 		// Don't shoot ourself in the foot and change our own DNS
@@ -128,22 +130,23 @@ func setupResolvConf(container *docker.Container) error {
 		buffer.Write([]byte("\n"))
 	}
 
-	return ioutil.WriteFile(container.ResolvConfPath, buffer.Bytes(), 0644)
+	return os.WriteFile(container.ResolvConfPath, buffer.Bytes(), 0644)
 }
 
-func (h *StartHandler) Handle(event *docker.APIEvents) error {
-	// Note: event.ID == container's ID
-	lock := locks.Lock("start." + event.ID)
-	if lock == nil {
-		log.Debugf("Container locked. Can't run StartHandler. ID: [%s]", event.ID)
+func (h *StartHandler) Handle(event *events.Message) error {
+	containerID := event.Actor.ID
+	unlock := trylock.Lock("start." + containerID)
+	if unlock == nil {
+		log.Debugf("Container locked. Can't run StartHandler. ID: [%s]", containerID)
 		return nil
 	}
-	defer lock.Unlock()
+	defer unlock()
 
-	c, err := h.Client.InspectContainer(event.ID)
+	inspectResult, err := h.Client.ContainerInspect(context.Background(), containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return err
 	}
+	c := &inspectResult.Container
 
 	if !c.State.Running {
 		log.Infof("Container [%s] not running. Can't setup resolv.conf.", c.ID)
@@ -156,7 +159,7 @@ func (h *StartHandler) Handle(event *docker.APIEvents) error {
 
 	if c.Config.Labels[CNILabel] != "" || c.Config.Labels[LegacyDNSLabel] == "true" ||
 		c.Config.Labels[LegacyNetworkLabel] == "true" {
-		log.Infof("Setting up resolv.conf for ContainerId [%s]", event.ID)
+		log.Infof("Setting up resolv.conf for ContainerId [%s]", containerID)
 		return setupResolvConf(c)
 	}
 

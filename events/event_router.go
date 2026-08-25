@@ -1,91 +1,110 @@
 package events
 
 import (
-	"github.com/fsouza/go-dockerclient"
-	log "github.com/sirupsen/logrus"
+	"context"
+	"errors"
+	"io"
 	"time"
+
+	mobyevents "github.com/moby/moby/api/types/events"
+	"github.com/moby/moby/client"
+	log "github.com/sirupsen/logrus"
 )
 
 const workerTimeout = 60 * time.Second
 
 type Handler interface {
-	Handle(*docker.APIEvents) error
+	Handle(*mobyevents.Message) error
 }
 
 type EventRouter struct {
-	handlers      map[string][]Handler
-	dockerClient  *docker.Client
-	listener      chan *docker.APIEvents
+	handlers      map[mobyevents.Action][]Handler
+	dockerClient  *client.Client
 	workers       chan *worker
 	workerTimeout time.Duration
+	cancel        context.CancelFunc
 }
 
-func NewEventRouter(bufferSize int, workerPoolSize int, dockerClient *docker.Client,
-	handlers map[string][]Handler) (*EventRouter, error) {
+func NewEventRouter(_ int, workerPoolSize int, dockerClient *client.Client,
+	handlers map[mobyevents.Action][]Handler,
+) (*EventRouter, error) {
 	workers := make(chan *worker, workerPoolSize)
 	for i := 0; i < workerPoolSize; i++ {
 		workers <- &worker{}
 	}
-
-	eventRouter := &EventRouter{
+	return &EventRouter{
 		handlers:      handlers,
 		dockerClient:  dockerClient,
-		listener:      make(chan *docker.APIEvents, bufferSize),
 		workers:       workers,
 		workerTimeout: workerTimeout,
-	}
-
-	return eventRouter, nil
+	}, nil
 }
 
 func (e *EventRouter) Start() error {
 	log.Info("Starting event router.")
-	go e.routeEvents()
-	if err := e.dockerClient.AddEventListener(e.listener); err != nil {
-		return err
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	e.cancel = cancel
+	result := e.dockerClient.Events(ctx, client.EventsListOptions{})
+	go e.routeEvents(ctx, result)
 	return nil
 }
 
 func (e *EventRouter) Stop() error {
-	if e.listener == nil {
-		return nil
-	}
-	if err := e.dockerClient.RemoveEventListener(e.listener); err != nil {
-		return err
+	if e.cancel != nil {
+		e.cancel()
+		e.cancel = nil
 	}
 	return nil
 }
 
-func (e *EventRouter) routeEvents() {
+func (e *EventRouter) routeEvents(ctx context.Context, result client.EventsResult) {
 	for {
-		event := <-e.listener
-		timer := time.NewTimer(e.workerTimeout)
-		gotWorker := false
-		for !gotWorker {
-			select {
-			case w := <-e.workers:
-				go w.doWork(event, e)
-				gotWorker = true
-			case <-timer.C:
-				log.Infof("Timed out waiting for worker. Re-initializing wait.")
+		select {
+		case <-ctx.Done():
+			return
+		case err, ok := <-result.Err:
+			if ok && err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
+				log.Errorf("Docker event stream stopped: %v", err)
 			}
+			return
+		case event, ok := <-result.Messages:
+			if !ok {
+				return
+			}
+			e.processEvent(ctx, &event)
+		}
+	}
+}
+
+func (e *EventRouter) processEvent(ctx context.Context, event *mobyevents.Message) {
+	timer := time.NewTimer(e.workerTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case w := <-e.workers:
+			go w.doWork(event, e)
+			return
+		case <-timer.C:
+			log.Info("Timed out waiting for Docker event worker; continuing to wait")
+			timer.Reset(e.workerTimeout)
+		case <-ctx.Done():
+			return
 		}
 	}
 }
 
 type worker struct{}
 
-func (w *worker) doWork(event *docker.APIEvents, e *EventRouter) {
-	defer func() { e.workers <- w }()
+func (w *worker) doWork(event *mobyevents.Message, router *EventRouter) {
+	defer func() { router.workers <- w }()
 	if event == nil {
 		return
 	}
-	if handlers, ok := e.handlers[event.Status]; ok {
+	if handlers, ok := router.handlers[event.Action]; ok {
 		log.Debugf("Processing event: %#v", event)
 		for _, handler := range handlers {
 			if err := handler.Handle(event); err != nil {
-				log.Errorf("Error processing event %#v. Error: %v", event, err)
+				log.Errorf("Error processing event %#v: %v", event, err)
 			}
 		}
 	}

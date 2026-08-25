@@ -3,13 +3,12 @@ package network
 import (
 	"context"
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"path"
 	"sync"
 
-	"github.com/docker/engine-api/client"
-	"github.com/docker/engine-api/types"
+	"github.com/containerd/errdefs"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -26,22 +25,23 @@ func newState(rootStateDir string, c *client.Client) (*state, error) {
 		c:            c,
 		rootStateDir: rootStateDir,
 	}
-	cs, err := c.ContainerList(context.Background(), types.ContainerListOptions{
+	result, err := c.ContainerList(context.Background(), client.ContainerListOptions{
 		All: true,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	for _, container := range cs {
-		inspect, err := c.ContainerInspect(context.Background(), container.ID)
-		if client.IsErrContainerNotFound(err) {
+	for _, summary := range result.Items {
+		inspectResult, err := c.ContainerInspect(context.Background(), summary.ID, client.ContainerInspectOptions{})
+		if errdefs.IsNotFound(err) {
 			continue
 		} else if err != nil {
 			return nil, err
 		}
+		inspect := inspectResult.Container
 		logrus.WithFields(logrus.Fields{
-			"cid":       container.ID,
+			"cid":       summary.ID,
 			"running":   inspect.State.Running,
 			"startedAt": inspect.State.StartedAt,
 		}).Infof("Inspecting on start")
@@ -53,13 +53,13 @@ func newState(rootStateDir string, c *client.Client) (*state, error) {
 			}
 			if hasIface {
 				logrus.WithFields(logrus.Fields{
-					"cid":       container.ID,
+					"cid":       summary.ID,
 					"startedAt": inspect.State.StartedAt,
 				}).Info("Recording previously started")
-				s.Started(container.ID, inspect.State.StartedAt, nil)
+				s.Started(summary.ID, inspect.State.StartedAt, nil)
 			} else {
 				logrus.WithFields(logrus.Fields{
-					"cid": container.ID,
+					"cid": summary.ID,
 				}).Info("Still needs networking")
 			}
 		}
@@ -98,20 +98,35 @@ func (s *state) writeState(id, startedAt string, state interface{}) {
 		return
 	}
 
-	f, err := ioutil.TempFile(dir, startedAt)
+	f, err := os.CreateTemp(dir, startedAt)
 	if err != nil {
 		logrus.Warnf("Problem creating network data temp file for %v: %v", filename, err)
 		return
 	}
 
-	_, err = f.Write(data)
-	if err != nil {
+	tempName := f.Name()
+	defer os.Remove(tempName)
+	if err := f.Chmod(0600); err != nil {
+		f.Close()
+		logrus.Warnf("Problem securing network data temp file for %v: %v", filename, err)
+		return
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
 		logrus.Warnf("Problem writing network data to temp file for %v: %v", filename, err)
 		return
 	}
-	defer f.Close()
+	if err := f.Sync(); err != nil {
+		f.Close()
+		logrus.Warnf("Problem syncing network data temp file for %v: %v", filename, err)
+		return
+	}
+	if err := f.Close(); err != nil {
+		logrus.Warnf("Problem closing network data temp file for %v: %v", filename, err)
+		return
+	}
 
-	if err := os.Rename(f.Name(), filename); err != nil {
+	if err := os.Rename(tempName, filename); err != nil {
 		logrus.Warnf("Problem renaming network data file for %v: %v", filename, err)
 	}
 }

@@ -8,7 +8,7 @@ Network Plugin Manager is branded, packaged, and deployed as a PastureStack comp
 - Link-local metadata address used by the infrastructure catalog: `169.254.169.250`
 - Docker control-plane labels under `io.rancher.*`
 - Legacy CA fallback: `/var/lib/rancher/etc/ssl/ca.crt`
-- Vendored dependency import paths under `github.com/rancher/*`
+- Metadata fields and event semantics inherited from the Rancher 1.6 wire contract; their small adapters are maintained under `internal/`
 - Legacy CNI driver value `rancher-bridge`, recognized alongside the PastureStack-native `pasture-bridge`
 - Existing CNI runtime argument `RancherContainerUUID`, emitted together with the PastureStack-native `PlatformContainerUUID`
 

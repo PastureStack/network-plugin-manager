@@ -3,18 +3,16 @@ package network
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"time"
 
-	cniTypes "github.com/containernetworking/cni/pkg/types"
-	"github.com/docker/docker/pkg/locker"
-	"github.com/docker/engine-api/client"
-	"github.com/docker/engine-api/types"
-	"github.com/docker/engine-api/types/container"
-	"github.com/pkg/errors"
-	glue "github.com/rancher/cniglue"
+	"github.com/PastureStack/network-plugin-manager/internal/cniglue"
+	"github.com/PastureStack/network-plugin-manager/internal/keylock"
+	"github.com/containerd/errdefs"
+	types100 "github.com/containernetworking/cni/pkg/types/100"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -29,7 +27,7 @@ const (
 type Manager struct {
 	c     *client.Client
 	s     *state
-	locks *locker.Locker
+	locks keylock.Map
 }
 
 func NewManager(c *client.Client) (*Manager, error) {
@@ -38,9 +36,8 @@ func NewManager(c *client.Client) (*Manager, error) {
 		return nil, err
 	}
 	return &Manager{
-		c:     c,
-		s:     s,
-		locks: locker.New(),
+		c: c,
+		s: s,
 	}, nil
 }
 
@@ -50,21 +47,22 @@ func (n *Manager) Evaluate(id string) error {
 }
 
 func (n *Manager) evaluate(id string, retryCount int) error {
-	n.locks.Lock(id)
-	defer n.locks.Unlock(id)
+	unlock := n.locks.Lock(id)
+	defer unlock()
 
 	wasTime := n.s.StartTime(id)
 	wasRunning := wasTime != ""
 	running := false
 	time := ""
 
-	inspect, err := n.c.ContainerInspect(context.Background(), id)
-	if client.IsErrContainerNotFound(err) {
+	inspectResult, err := n.c.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
+	if errdefs.IsNotFound(err) {
 		running = false
 		time = ""
 	} else if err != nil {
 		return err
 	} else {
+		inspect := inspectResult.Container
 		if !configureNetwork(&inspect) {
 			return nil
 		}
@@ -82,12 +80,12 @@ func (n *Manager) evaluate(id string, retryCount int) error {
 
 	if wasRunning {
 		if running && wasTime != time {
-			return n.networkUp(id, inspect, retryCount)
+			return n.networkUp(id, inspectResult.Container, retryCount)
 		} else if !running {
-			return n.networkDown(id, inspect)
+			return n.networkDown(id, inspectResult.Container)
 		}
 	} else if running {
-		return n.networkUp(id, inspect, retryCount)
+		return n.networkUp(id, inspectResult.Container, retryCount)
 	}
 
 	return nil
@@ -101,21 +99,21 @@ func (n *Manager) retry(id string, retryCount int) {
 	}
 }
 
-func (n *Manager) networkUp(id string, inspect types.ContainerJSON, retryCount int) (err error) {
+func (n *Manager) networkUp(id string, inspect container.InspectResponse, retryCount int) (err error) {
 	logrus.WithFields(logrus.Fields{"networkMode": inspect.HostConfig.NetworkMode, "cid": inspect.ID}).Infof("CNI up")
 	startedAt := inspect.State.StartedAt
 
-	pluginState, err := glue.LookupPluginState(inspect)
+	pluginState, err := cniglue.LookupPluginState(inspect)
 	if err != nil {
-		return n.s.recordNetworkUpError(id, startedAt, errors.Wrap(err, "Couldn't find plugin state"))
+		return n.s.recordNetworkUpError(id, startedAt, fmt.Errorf("find CNI plugin state: %w", err))
 	}
-	result, err := glue.CNIAdd(pluginState)
+	result, err := cniglue.CNIAdd(pluginState)
 	if err != nil {
 		if retryCount < maxRetries {
 			go n.retry(id, retryCount+1)
 			return err
 		}
-		return n.s.recordNetworkUpError(id, startedAt, errors.Wrap(err, "Couldn't bring up network"))
+		return n.s.recordNetworkUpError(id, startedAt, fmt.Errorf("bring up CNI network: %w", err))
 	}
 	logrus.WithFields(logrus.Fields{
 		"networkMode": inspect.HostConfig.NetworkMode,
@@ -123,20 +121,20 @@ func (n *Manager) networkUp(id string, inspect types.ContainerJSON, retryCount i
 		"result":      result,
 	}).Infof("CNI up done")
 	if err := n.setupHosts(inspect, result); err != nil {
-		return n.s.recordNetworkUpError(id, startedAt, errors.Wrap(err, "Couldn't setup hosts"))
+		return n.s.recordNetworkUpError(id, startedAt, fmt.Errorf("set up container hosts file: %w", err))
 	}
 	n.s.Started(id, inspect.State.StartedAt, result)
 	return nil
 }
 
-func (n *Manager) setupHosts(inspect types.ContainerJSON, result *cniTypes.Result) error {
+func (n *Manager) setupHosts(inspect container.InspectResponse, result *types100.Result) error {
+	ip := cniglue.PrimaryIPv4(result)
 	if inspect.Config == nil || inspect.Config.Hostname == "" || inspect.HostsPath == "" ||
-		result == nil || result.IP4.IP.String() == "" {
+		ip == "" {
 		return nil
 	}
 
-	hosts, err := ioutil.ReadFile(inspect.HostsPath)
-	ip := strings.SplitN(result.IP4.IP.String(), "/", 2)[0]
+	hosts, err := os.ReadFile(inspect.HostsPath)
 	if os.IsNotExist(err) {
 		return nil
 	} else if err != nil {
@@ -150,23 +148,26 @@ func (n *Manager) setupHosts(inspect types.ContainerJSON, result *cniTypes.Resul
 	}
 
 	updatedHosts := hostsString + line
-	return ioutil.WriteFile(inspect.HostsPath, []byte(updatedHosts), 0644)
+	return os.WriteFile(inspect.HostsPath, []byte(updatedHosts), 0644)
 }
 
-func (n *Manager) networkDown(id string, inspect types.ContainerJSON) error {
+func (n *Manager) networkDown(id string, inspect container.InspectResponse) error {
 	defer n.s.Stopped(id)
-	if inspect.ContainerJSONBase == nil || inspect.HostConfig == nil {
+	if inspect.HostConfig == nil {
 		return nil
 	}
 	logrus.WithFields(logrus.Fields{"networkMode": inspect.HostConfig.NetworkMode, "cid": inspect.ID}).Infof("CNI down")
-	pluginState, err := glue.LookupPluginState(inspect)
+	pluginState, err := cniglue.LookupPluginState(inspect)
 	if err != nil && !os.IsNotExist(err) {
-		return errors.Wrap(err, "Finding plugin state on down")
+		return fmt.Errorf("find CNI plugin state on down: %w", err)
 	}
-	return glue.CNIDel(pluginState)
+	return cniglue.CNIDel(pluginState)
 }
 
-func configureNetwork(inspect *types.ContainerJSON) bool {
+func configureNetwork(inspect *container.InspectResponse) bool {
+	if inspect == nil || inspect.Config == nil || inspect.HostConfig == nil {
+		return false
+	}
 	net, ok := inspect.Config.Labels[CNILabel]
 	if !ok && (inspect.Config.Labels[LegacyManagedNetLabel] == "true" || inspect.Config.Labels[IPLabel] != "") {
 		net = "managed"

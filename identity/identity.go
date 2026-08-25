@@ -2,12 +2,13 @@ package identity
 
 import (
 	"context"
-	"io/ioutil"
+	"errors"
+	"fmt"
+	"os"
 	"strings"
 
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/docker/engine-api/client"
-	"github.com/pkg/errors"
+	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
 
@@ -29,7 +30,7 @@ func LocalHost(mc metadata.Client, dc *client.Client) (metadata.Host, error) {
 
 	hosts, err := mc.GetHosts()
 	if err != nil {
-		return metadata.Host{}, errors.Wrap(err, "get hosts")
+		return metadata.Host{}, fmt.Errorf("get hosts: %w", err)
 	}
 
 	for _, host := range hosts {
@@ -46,7 +47,7 @@ func LocalHost(mc metadata.Client, dc *client.Client) (metadata.Host, error) {
 		return selfHost, nil
 	}
 
-	return metadata.Host{}, errors.Errorf("local host uuid %s not found in metadata hosts", hostUUID)
+	return metadata.Host{}, fmt.Errorf("local host UUID %s not found in metadata hosts", hostUUID)
 }
 
 // LocalHostUUID resolves this container's platform HostUUID without relying on
@@ -60,7 +61,7 @@ func LocalHostUUID(mc metadata.Client, dc *client.Client) (string, error) {
 
 	host, err := mc.GetSelfHost()
 	if err != nil {
-		return "", errors.Wrap(err, "get self host")
+		return "", fmt.Errorf("get self host: %w", err)
 	}
 	if host.UUID == "" {
 		return "", errors.New("metadata self host has empty uuid")
@@ -74,10 +75,11 @@ func localHostUUIDFromDockerLabels(mc metadata.Client, dc *client.Client) (strin
 		return "", err
 	}
 
-	inspect, err := dc.ContainerInspect(context.Background(), id)
+	inspectResult, err := dc.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
 	if err != nil {
-		return "", errors.Wrapf(err, "inspect current container %s", id)
+		return "", fmt.Errorf("inspect current container %s: %w", id, err)
 	}
+	inspect := inspectResult.Container
 	if inspect.Config == nil {
 		return "", errors.New("current container inspect has no config")
 	}
@@ -93,7 +95,7 @@ func localHostUUIDFromDockerLabels(mc metadata.Client, dc *client.Client) (strin
 
 	services, err := mc.GetServices()
 	if err != nil {
-		return "", errors.Wrap(err, "get services")
+		return "", fmt.Errorf("get services: %w", err)
 	}
 
 	for _, service := range services {
@@ -110,13 +112,13 @@ func localHostUUIDFromDockerLabels(mc metadata.Client, dc *client.Client) (strin
 		}
 	}
 
-	return "", errors.Errorf("current container not found in metadata services uuid=%s name=%s id=%s", ownUUID, ownName, ownExternalID)
+	return "", fmt.Errorf("current container not found in metadata services uuid=%s name=%s id=%s", ownUUID, ownName, ownExternalID)
 }
 
 func currentContainerID() (string, error) {
-	content, err := ioutil.ReadFile("/proc/self/mountinfo")
+	content, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
-		return "", errors.Wrap(err, "read /proc/self/mountinfo")
+		return "", fmt.Errorf("read /proc/self/mountinfo: %w", err)
 	}
 
 	for _, line := range strings.Split(string(content), "\n") {

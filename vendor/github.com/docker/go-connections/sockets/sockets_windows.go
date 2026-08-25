@@ -1,13 +1,18 @@
 package sockets
 
 import (
+	"context"
 	"net"
-	"time"
+	"net/http"
 
 	"github.com/Microsoft/go-winio"
 )
 
-// DialPipe connects to a Windows named pipe.
-func DialPipe(addr string, timeout time.Duration) (net.Conn, error) {
-	return winio.DialPipe(addr, &timeout)
+func configureNpipeTransport(tr *http.Transport, addr string) error {
+	// No need for compression in local communications.
+	tr.DisableCompression = true
+	tr.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return winio.DialPipeContext(ctx, addr)
+	}
+	return nil
 }
