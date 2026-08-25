@@ -1,6 +1,8 @@
 module github.com/PastureStack/network-plugin-manager
 
-go 1.27
+go 1.26.0
+
+toolchain go1.27.0
 
 require (
 	github.com/containerd/errdefs v1.0.0
