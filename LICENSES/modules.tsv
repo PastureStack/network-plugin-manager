@@ -18,7 +18,7 @@ github.com/moby/moby/client	v0.5.1	github.com__moby__moby__client--LICENSE	cfc77
 github.com/opencontainers/go-digest	v1.0.0	github.com__opencontainers__go-digest--LICENSE	aceb55133c41c50c2e170c5918e301fe74f592d0f28724bf2f7a7bfdcff1fc5f
 github.com/opencontainers/go-digest	v1.0.0	github.com__opencontainers__go-digest--LICENSE.docs	a1d1adec3ba691ef6e377a78bbe9e9e2501f2f4a1723d08857da1ac6564e4fed
 github.com/opencontainers/image-spec	v1.1.1	github.com__opencontainers__image-spec--LICENSE	b0a3f39513927db306adabea11d14c23f079d4febcea241d123a68d1a0d45418
-github.com/sirupsen/logrus	v1.10.1	github.com__sirupsen__logrus--LICENSE	51a0c9ec7f8b7634181b8d4c03e5b5d204ac21d6e72f46c313973424664b2e6b
+github.com/sirupsen/logrus	v1.10.2	github.com__sirupsen__logrus--LICENSE	51a0c9ec7f8b7634181b8d4c03e5b5d204ac21d6e72f46c313973424664b2e6b
 github.com/urfave/cli/v3	v3.11.0	github.com__urfave__cli__v3--LICENSE	85695dfe027cabaf97c7fea77c45a01a36c0815e52df9219894b1ba031ee72f0
 github.com/vishvananda/netlink	v1.3.1	github.com__vishvananda__netlink--LICENSE	04cf148229e562c643203d1ee8c43aae2022e5130e95ceb8ba8357a27c1a9abe
 github.com/vishvananda/netns	v0.0.5	github.com__vishvananda__netns--LICENSE	04cf148229e562c643203d1ee8c43aae2022e5130e95ceb8ba8357a27c1a9abe
