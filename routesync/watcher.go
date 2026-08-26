@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/PastureStack/network-plugin-manager/internal/logsafe"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
@@ -18,7 +19,7 @@ var (
 
 // Watch makes sure the needed routes are programmed inside the container
 func Watch(syncIntervalStr string) error {
-	logrus.Debugf("routesync: syncIntervalStr: %v", syncIntervalStr)
+	logrus.Debugf("routesync: syncIntervalStr: %s", logsafe.Value(syncIntervalStr))
 
 	syncInterval := DefaultSyncInterval
 	if i, err := strconv.Atoi(syncIntervalStr); err == nil {
@@ -44,13 +45,13 @@ func Watch(syncIntervalStr string) error {
 }
 
 func doRouteSync(bridgeName, metadataIP string, syncInterval int) {
-	logrus.Infof("routesync: starting monitoring on bridge: %v, for metadataIP: %v every %v seconds", bridgeName, metadataIP, syncInterval)
+	logrus.Infof("routesync: starting monitoring on bridge: %s, for metadataIP: %s every %v seconds", logsafe.Value(bridgeName), logsafe.Value(metadataIP), syncInterval)
 	for {
 		time.Sleep(time.Duration(syncInterval) * time.Second)
 		logrus.Debugf("routesync: time to sync routes")
 		err := addRouteToMetadataIP(bridgeName, metadataIP)
 		if err != nil {
-			logrus.Errorf("routesync: while syncing routes, got error: %v", err)
+			logrus.Errorf("routesync: while syncing routes, got error: %s", logsafe.Value(err))
 		}
 	}
 }
@@ -61,7 +62,7 @@ func conditionsMetToWatch() (bool, string, string) {
 	dockerBridge := os.Getenv("DOCKER_BRIDGE")
 	metadataIP := os.Getenv("METADATA_IP")
 
-	logrus.Infof("routesync: DOCKER_BRIDGE=%v, METADATA_IP=%v", dockerBridge, metadataIP)
+	logrus.Infof("routesync: DOCKER_BRIDGE=%s, METADATA_IP=%s", logsafe.Value(dockerBridge), logsafe.Value(metadataIP))
 
 	if len(dockerBridge) > 0 && len(metadataIP) > 0 {
 		return true, dockerBridge, metadataIP
@@ -94,20 +95,20 @@ func addRouteToMetadataIP(bridgeName, metadataIP string) error {
 			mIP := net.ParseIP(metadataIP)
 			existingRoutes, err := netlink.RouteGet(mIP)
 			if err != nil {
-				logrus.Errorf("routesync: error getting route: %v", err)
+				logrus.Errorf("routesync: error getting route: %s", logsafe.Value(err))
 				return err
 			}
-			logrus.Debugf("routesync: existingRoutes: %#v", existingRoutes)
+			logrus.Debugf("routesync: existingRoutes: %s", logsafe.Value(fmt.Sprintf("%#v", existingRoutes)))
 			if existingRoutes[0].LinkIndex != r.LinkIndex && existingRoutes[0].Dst != r.Dst {
 				return fmt.Errorf("conflicting routes to metadata IP(%v): %v", metadataIP, existingRoutes)
 			}
 			logrus.Debugf("routesync: route already exisits, skipping")
 		} else {
-			logrus.Errorf("routesync: error adding route: %v", err)
+			logrus.Errorf("routesync: error adding route: %s", logsafe.Value(err))
 			return err
 		}
 	} else {
-		logrus.Infof("routesync: successfully added route to metadata IP(%v): %v", metadataIP, r)
+		logrus.Infof("routesync: successfully added route to metadata IP(%s): %s", logsafe.Value(metadataIP), logsafe.Value(r))
 	}
 
 	return nil

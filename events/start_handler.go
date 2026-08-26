@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PastureStack/network-plugin-manager/internal/logsafe"
 	"github.com/PastureStack/network-plugin-manager/internal/trylock"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/events"
@@ -57,15 +58,15 @@ func getDNSSearch(container *container.InspectResponse) []string {
 
 	defaultDomains = append(defaultDomains, PlatformDomain)
 
-	log.Debugf("defaultDomains: %v", defaultDomains)
+	log.Debugf("defaultDomains: %s", logsafe.Value(defaultDomains))
 	return defaultDomains
 }
 
 func setupResolvConf(container *container.InspectResponse) error {
-	log.Debugf("Setting up resolver configuration for container %s", container.ID)
+	log.Debugf("Setting up resolver configuration for container %s", logsafe.Value(container.ID))
 	if container.ResolvConfPath == "/etc/resolv.conf" {
 		// Don't shoot ourself in the foot and change our own DNS
-		log.Debugf("resolv.conf already set for container: %v, skipping", container.ID)
+		log.Debugf("resolv.conf already set for container: %s, skipping", logsafe.Value(container.ID))
 		return nil
 	}
 
@@ -103,7 +104,7 @@ func setupResolvConf(container *container.InspectResponse) error {
 			} else {
 				text = strings.Replace(text, "search", "search "+strings.Join(domainsToBeAdded, " "), 1)
 			}
-			log.Debugf("text: %v", text)
+			log.Debugf("text: %s", logsafe.Value(text))
 			searchSet = true
 		}
 
@@ -137,7 +138,7 @@ func (h *StartHandler) Handle(event *events.Message) error {
 	containerID := event.Actor.ID
 	unlock := trylock.Lock("start." + containerID)
 	if unlock == nil {
-		log.Debugf("Container locked. Can't run StartHandler. ID: [%s]", containerID)
+		log.Debugf("Container locked. Can't run StartHandler. ID: [%s]", logsafe.Value(containerID))
 		return nil
 	}
 	defer unlock()
@@ -149,7 +150,7 @@ func (h *StartHandler) Handle(event *events.Message) error {
 	c := &inspectResult.Container
 
 	if !c.State.Running {
-		log.Infof("Container [%s] not running. Can't setup resolv.conf.", c.ID)
+		log.Infof("Container [%s] not running. Can't setup resolv.conf.", logsafe.Value(c.ID))
 		return nil
 	}
 
@@ -159,7 +160,7 @@ func (h *StartHandler) Handle(event *events.Message) error {
 
 	if c.Config.Labels[CNILabel] != "" || c.Config.Labels[LegacyDNSLabel] == "true" ||
 		c.Config.Labels[LegacyNetworkLabel] == "true" {
-		log.Infof("Setting up resolv.conf for ContainerId [%s]", containerID)
+		log.Infof("Setting up resolv.conf for ContainerId [%s]", logsafe.Value(containerID))
 		return setupResolvConf(c)
 	}
 

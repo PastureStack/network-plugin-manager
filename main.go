@@ -12,6 +12,7 @@ import (
 	"github.com/PastureStack/network-plugin-manager/events"
 	"github.com/PastureStack/network-plugin-manager/hostnat"
 	"github.com/PastureStack/network-plugin-manager/hostports"
+	"github.com/PastureStack/network-plugin-manager/internal/logsafe"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/PastureStack/network-plugin-manager/macsync"
 	"github.com/PastureStack/network-plugin-manager/network"
@@ -57,7 +58,7 @@ func main() {
 		Action: run,
 	}
 	if err := app.Run(context.Background(), os.Args); err != nil {
-		logrus.Fatal(err)
+		logrus.Fatal(logsafe.Value(err))
 	}
 }
 
@@ -67,7 +68,7 @@ func run(_ context.Context, c *cli.Command) error {
 	}
 
 	if err := routesync.Watch(c.String("routesync-interval")); err != nil {
-		logrus.Errorf("Failed to start routesync: %v", err)
+		logrus.Errorf("Failed to start routesync: %s", logsafe.Value(err))
 		return err
 	}
 
@@ -92,27 +93,27 @@ func run(_ context.Context, c *cli.Command) error {
 	}
 
 	if err := reaper.Watch(dClient, mClient); err != nil {
-		logrus.Errorf("Failed to start unmanaged container reaper: %v", err)
+		logrus.Errorf("Failed to start unmanaged container reaper: %s", logsafe.Value(err))
 	}
 
 	if err := hostports.Watch(mClient, dClient); err != nil {
-		logrus.Errorf("Failed to start host ports configuration: %v", err)
+		logrus.Errorf("Failed to start host ports configuration: %s", logsafe.Value(err))
 	}
 
 	if err := hostnat.Watch(mClient, dClient); err != nil {
-		logrus.Errorf("Failed to start host nat configuration: %v", err)
+		logrus.Errorf("Failed to start host nat configuration: %s", logsafe.Value(err))
 	}
 
 	if err := conntracksync.Watch(c.String("conntracksync-interval"), mClient, dClient); err != nil {
-		logrus.Errorf("Failed to start conntracksync: %v", err)
+		logrus.Errorf("Failed to start conntracksync: %s", logsafe.Value(err))
 	}
 
 	if err := cniconf.Watch(mClient, dClient); err != nil {
-		logrus.Errorf("Failed to start cni config: %v", err)
+		logrus.Errorf("Failed to start cni config: %s", logsafe.Value(err))
 	}
 
 	if err := arpsync.Watch(c.String("arpsync-interval"), mClient, dClient); err != nil {
-		logrus.Errorf("Failed to start arpsync: %v", err)
+		logrus.Errorf("Failed to start arpsync: %s", logsafe.Value(err))
 	}
 
 	binWatcher := binexec.Watch(mClient, dClient)

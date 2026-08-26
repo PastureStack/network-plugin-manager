@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/PastureStack/network-plugin-manager/internal/logsafe"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
@@ -56,7 +57,7 @@ func LocalHostUUID(mc metadata.Client, dc *client.Client) (string, error) {
 	if hostUUID, err := localHostUUIDFromDockerLabels(mc, dc); err == nil && hostUUID != "" {
 		return hostUUID, nil
 	} else if err != nil {
-		logrus.Warnf("identity: docker-label host lookup failed, falling back to metadata self host: %v", err)
+		logrus.Warnf("identity: docker-label host lookup failed, falling back to metadata self host: %s", logsafe.Value(err))
 	}
 
 	host, err := mc.GetSelfHost()
