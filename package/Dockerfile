@@ -19,6 +19,8 @@ RUN set -eux; \
         "iproute2=${ALPINE_APK_IPROUTE2_VERSION}" \
         "iptables=${ALPINE_APK_IPTABLES_VERSION}" \
         "jq=${ALPINE_APK_JQ_VERSION}" \
+        "libcrypto3=${ALPINE_APK_LIBCRYPTO3_VERSION}" \
+        "libssl3=${ALPINE_APK_LIBSSL3_VERSION}" \
         "net-tools=${ALPINE_APK_NET_TOOLS_VERSION}" \
         "procps-ng=${ALPINE_APK_PROCPS_NG_VERSION}" \
         "psmisc=${ALPINE_APK_PSMISC_VERSION}" \
