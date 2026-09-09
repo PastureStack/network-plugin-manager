@@ -8,7 +8,13 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Runtime image
 
-The maintained image is published from this repository as:
+The current Catalog image is `v0.6.34`; the latest matching GitHub Release is
+still `v0.6.31`. The newer image is therefore deployment evidence, not a
+complete Release-and-image publication. A future publication must use one
+unused pure numeric version and align the source, Release, image, SBOM, and
+Catalog in the same gate.
+
+The maintained image coordinate is:
 
 ```text
 ghcr.io/pasturestack/network-plugin-manager:<version>
@@ -28,7 +34,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.6.34 IMAGE_NAMESPACE=pasturestack make package
+VERSION_OVERRIDE=v0.6.34 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.
