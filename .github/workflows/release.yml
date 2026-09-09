@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing annotated pure numeric release tag to resume
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -12,7 +18,7 @@ permissions:
   attestations: write
 
 concurrency:
-  group: network-plugin-manager-release-${{ github.ref }}
+  group: network-plugin-manager-release-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -22,10 +28,12 @@ jobs:
     env:
       SERVICE_NAME: ghcr.io/pasturestack/network-plugin-manager
       TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
       - name: Check out immutable tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.release_tag || github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -34,14 +42,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = 'tag'
-          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$GITHUB_REF_NAME")"
-          version="${GITHUB_REF_NAME#v}"
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
+          version="${RELEASE_TAG#v}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           previous_version="$(
             git tag --list 'v*' \
               | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-              | grep -Fvx "$GITHUB_REF_NAME" \
+              | grep -Fvx "$RELEASE_TAG" \
               | sed 's/^v//' \
               | sort -V \
               | tail -n 1
@@ -50,8 +59,9 @@ jobs:
             test "$version" != "$previous_version"
             test "$(printf '%s\n%s\n' "$previous_version" "$version" | sort -V | tail -n 1)" = "$version"
           fi
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
-          printf 'service_image=%s:%s\n' "$SERVICE_NAME" "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          printf 'service_image=%s:%s\n' "$SERVICE_NAME" "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Install checksum-pinned Go toolchain
         shell: bash
@@ -70,7 +80,7 @@ jobs:
       - name: Test, build, and package the release
         shell: bash
         env:
-          VERSION_OVERRIDE: ${{ github.ref_name }}
+          VERSION_OVERRIDE: ${{ steps.release_meta.outputs.tag }}
           SERVICE_IMAGE: ${{ steps.release_meta.outputs.service_image }}
         run: |
           set -euo pipefail
@@ -82,12 +92,12 @@ jobs:
           rm -f bin/network-plugin-manager
           ./scripts/build
           test "$(sha256sum bin/network-plugin-manager | awk '{print $1}')" = "$first_sha"
-          ARCH=amd64 TAG="$GITHUB_REF_NAME" REPO=ghcr.io/pasturestack \
+          ARCH=amd64 TAG="$RELEASE_TAG" REPO=ghcr.io/pasturestack \
             SOURCE_DATE_EPOCH="$source_epoch" ./scripts/package
           test "$(wc -l < dist/images)" -eq 1
           grep -Fxq "$SERVICE_IMAGE" dist/images
           docker run --rm --entrypoint /usr/bin/network-plugin-manager "$SERVICE_IMAGE" --version \
-            | grep -Fq "$GITHUB_REF_NAME"
+            | grep -Fq "$RELEASE_TAG"
 
       - name: Scan release source, binary, and image
         shell: bash
@@ -155,11 +165,11 @@ jobs:
         id: publish
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GHCR_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN || github.token }}
           SERVICE_IMAGE: ${{ steps.release_meta.outputs.service_image }}
         run: |
           set -euo pipefail
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker push "$SERVICE_IMAGE"
           reference="$(docker image inspect --format '{{index .RepoDigests 0}}' "$SERVICE_IMAGE")"
           digest="${reference#*@}"
@@ -185,7 +195,7 @@ jobs:
           VERSION: ${{ steps.release_meta.outputs.version }}
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "Network Plugin Manager ${VERSION}" \
             --notes 'PastureStack network reconciliation runtime with current security updates, SBOMs, checksums, and build provenance.' \
             "dist/release/network-plugin-manager-${VERSION}-linux-amd64.tar.xz" \
