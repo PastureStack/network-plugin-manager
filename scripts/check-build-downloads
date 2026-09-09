@@ -29,6 +29,8 @@ require_fixed Dockerfile.dapper "FROM $(lock_value golang_image)" dapper_go_imag
 require_fixed package/Dockerfile "FROM $(lock_value alpine_image)" runtime_base
 require_fixed package/Dockerfile '"curl=${ALPINE_APK_CURL_VERSION}"' runtime_curl_pin
 require_fixed package/Dockerfile '"jq=${ALPINE_APK_JQ_VERSION}"' runtime_jq_pin
+require_fixed package/Dockerfile '"libcrypto3=${ALPINE_APK_LIBCRYPTO3_VERSION}"' runtime_libcrypto_pin
+require_fixed package/Dockerfile '"libssl3=${ALPINE_APK_LIBSSL3_VERSION}"' runtime_libssl_pin
 require_fixed scripts/package 'docker build \' bounded_image_build
 reject_pattern scripts/package 'buildx (create|rm)|builder prune' custom_builder_removed
 reject_pattern package/Dockerfile 'COPY bin/docker|/usr/bin/docker' runtime_docker_cli_removed
