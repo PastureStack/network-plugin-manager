@@ -47,17 +47,19 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
           version="${RELEASE_TAG#v}"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          previous_version="$(
-            git tag --list 'v*' \
-              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-              | grep -Fvx "$RELEASE_TAG" \
-              | sed 's/^v//' \
-              | sort -V \
-              | tail -n 1
-          )"
-          if [ -n "$previous_version" ]; then
-            test "$version" != "$previous_version"
-            test "$(printf '%s\n%s\n' "$previous_version" "$version" | sort -V | tail -n 1)" = "$version"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            previous_version="$(
+              git tag --list 'v*' \
+                | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+                | grep -Fvx "$RELEASE_TAG" \
+                | sed 's/^v//' \
+                | sort -V \
+                | tail -n 1
+            )"
+            if [ -n "$previous_version" ]; then
+              test "$version" != "$previous_version"
+              test "$(printf '%s\n%s\n' "$previous_version" "$version" | sort -V | tail -n 1)" = "$version"
+            fi
           fi
           printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
