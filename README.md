@@ -8,31 +8,27 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Runtime image
 
-The `v0.8.11` source tag exists, but its GHCR image publication did not
-complete. Do not treat that tag as a deployable release. The `v0.8.12` image
-has been published with manifest digest
-`sha256:f210ecc8519528feb79d68ba70b4fc3f99c6b4f4afe20af156bb68601c73edb7`;
-the release workflow produced its SBOM and provenance attestations. The
-Catalog integration and the complete control-plane host lifecycle gate are
-separate from image publication. On an isolated Ubuntu 26.04.1 / Docker 29.8
-VM, the published source passed native-backend detection, metadata watcher
-readiness/failure retention, overlay-source-preserving egress/DNS/HTTPS, and
-same-/cross-bridge host-port traffic, including after Docker restart and host
-reboot. These tests do not establish multi-host rollout or existing-stack
-upgrade safety; those gates remain pending.
+The current released image is `v0.8.14`, with GHCR manifest digest
+`sha256:59b4bb31df28503337e9f3b8f08c18aa0dbe9749692c721fe8bdfc4cc921f263`.
+Its immutable tag resolves to signed source commit
+`98ffacd24436d42e33db721ab7026739d0edee41`. The release workflow passed
+tests, a reproducible build, Trivy source/binary/image scans, CycloneDX source
+and image SBOM checks, and asset/image provenance attestations. Image
+publication is separate from Catalog integration and the complete
+control-plane host lifecycle gate.
 
-The v0.8.13 source addresses a separate upgrade failure on hosts where
-Docker uses iptables-nft but an older manager left a loaded legacy NAT table
-with CATTLE_* hooks. The image built from this source includes a pinned,
-independent iptables-legacy executable, so startup can inspect that table
-without mistaking the generic iptables alternative for the legacy frontend.
+On an isolated Ubuntu 26.04.1 / Docker 29.8 VM, a source-equivalent release
+candidate passed backend detection against Docker's native nftables,
+iptables-nft, and iptables-legacy modes, rejected mismatched explicit choices
+without changing rules, and passed a Docker restart check and a legacy-mode
+host reboot check. This does not establish multi-host rollout or existing-stack
+upgrade safety.
 
-The proposed v0.8.14 change tightens that preflight: a loaded legacy table
-with active old platform or Docker hooks now blocks Docker-native nftables,
-and a platform hook in the *other* xtables frontend blocks Docker's iptables
-mode. Merely declaring an unhooked chain does not select or block a backend.
-This candidate is not a published image; it still requires the independent
-image and host-lifecycle release gates before production use.
+The current preflight inspects already loaded legacy tables using an
+independent iptables-legacy executable. Active old platform or Docker hooks
+in the other frontend block startup; an unhooked chain declaration alone does
+not select or block a backend. The manager never migrates host rules or
+switches Docker's selected backend automatically.
 
 A bounded two-host upgrade gate passed after operator-controlled cleanup of
 old platform hooks: both hosts retained nft Docker hooks, the new manager was
