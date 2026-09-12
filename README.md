@@ -24,11 +24,16 @@ without changing rules, and passed a Docker restart check and a legacy-mode
 host reboot check. This does not establish multi-host rollout or existing-stack
 upgrade safety.
 
-The `v0.8.15` source candidate moves same-subnet NAT exclusion into this
-manager's xtables rules, matching its native nftables ownership. The isolated
-VM applied, reapplied, inspected, and removed candidate host NAT and host-port
-rules under Docker's iptables-nft and iptables-legacy frontends. This is not
-yet evidence of a published `v0.8.15` image or a managed-service rollout.
+The current published image is `v0.8.15`, with GHCR manifest digest
+`sha256:622cfb38a58f204d23152205e6d850d204d1cb9d3c50392a935afee49d780e3e`.
+Its annotated tag resolves to signed source commit
+`26eee48df2e3bac96fc97fcd596a16deccc9f4ad`. The release workflow passed
+its build, security, checksum, SBOM, and provenance gates. This release moves
+same-subnet NAT exclusion into the manager's xtables rules, matching native
+nftables ownership. The isolated VM applied, reapplied, inspected, and removed
+candidate host NAT and host-port rules under Docker's iptables-nft and
+iptables-legacy frontends. Image publication and isolated-VM tests do not by
+themselves establish a managed-service or multi-host rollout.
 
 The current preflight inspects already loaded legacy tables using an
 independent iptables-legacy executable. Active old platform or Docker hooks
