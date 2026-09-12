@@ -27,6 +27,13 @@ with CATTLE_* hooks. The image built from this source includes a pinned,
 independent iptables-legacy executable, so startup can inspect that table
 without mistaking the generic iptables alternative for the legacy frontend.
 
+The proposed v0.8.14 change tightens that preflight: a loaded legacy table
+with active old platform or Docker hooks now blocks Docker-native nftables,
+and a platform hook in the *other* xtables frontend blocks Docker's iptables
+mode. Merely declaring an unhooked chain does not select or block a backend.
+This candidate is not a published image; it still requires the independent
+image and host-lifecycle release gates before production use.
+
 A bounded two-host upgrade gate passed after operator-controlled cleanup of
 old platform hooks: both hosts retained nft Docker hooks, the new manager was
 healthy, Metadata and IPsec services ran, and metadata network namespaces
@@ -60,8 +67,9 @@ For Docker 29's native nftables backend, configure the Docker daemon with
 `"bridge-accept-fwmark": "0x1068/0x1068"`. Enable and persist host
 `net.ipv4.ip_forward=1` **before restarting Docker**; otherwise a fresh
 Ubuntu 26.04 installation may fail to start Docker after reboot. The manager
-checks Docker's installed mark rule and rejects stale platform xtables hooks
-or an old `iptables-nft` FORWARD DROP policy. It reports these conditions for
+checks Docker's installed mark rule and rejects stale platform xtables hooks,
+active Docker xtables NAT hooks, or an old xtables FORWARD DROP policy in the
+loaded frontends. It reports these conditions for
 an operator to migrate explicitly; it does not change a global FORWARD policy
 or rewrite Docker's own nftables tables. Existing legacy installations keep
 their explicitly selected compatibility path. Do not switch a production host
@@ -70,9 +78,10 @@ container egress, DNS, host ports, Docker restart, and host reboot.
 
 On an `iptables-nft` host, a loaded legacy NAT table is inspected with the
 dedicated `iptables-legacy` executable. An old `CATTLE_*` hook there does not
-make legacy Docker's active backend; an active legacy Docker NAT hook or an
-uninspectable table fails closed. The manager writes only to Docker's selected
-backend and never silently removes old hooks. See the bounded cleanup steps
+make legacy Docker's active backend, but an active hook in the opposite
+frontend still blocks manager startup; so does an active legacy Docker NAT
+hook or an uninspectable loaded table. The manager writes only to Docker's
+selected backend and never silently removes old hooks. See the bounded cleanup steps
 in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 Native host NAT excludes destinations within each network's configured
@@ -99,7 +108,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.8.13 IMAGE_NAMESPACE=local/pasturestack make package
+VERSION_OVERRIDE=v0.8.14 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.

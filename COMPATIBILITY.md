@@ -32,7 +32,11 @@ hosts with `iptables-nft` use its separate compatibility CLI; Docker's native
 `nftables` driver uses an owned nft table and Docker's documented bridge
 firewall-mark integration. They are distinct modes, not interchangeable
 spellings for the same rules. Native startup inspects old `iptables-nft`
-FORWARD policy and platform hooks without loading legacy modules. Operators
+rules and any already loaded legacy filter/NAT tables for active platform or
+Docker hooks and FORWARD DROP policy. It does not load legacy modules just to
+inspect an unused frontend. Docker's iptables modes also reject active
+platform hooks in the opposite frontend; an unhooked chain declaration alone
+does not count as live packet processing. Operators
 migrating a legacy host must audit and remove its pre-existing legacy rules
 under their own change control before enabling Docker native nftables; this
 component never auto-imports or silently deletes such rules. The retained
