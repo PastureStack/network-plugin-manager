@@ -26,12 +26,15 @@ The compatibility CA path is read only when the PastureStack-native path is abse
 
 ## Firewall backend migration
 
-The legacy `iptables-legacy` frontend remains an explicit compatibility mode
-for hosts that intentionally use Docker's iptables firewall backend. Modern
-hosts with `iptables-nft` use its separate compatibility CLI; Docker's native
+The `iptables-legacy` frontend remains an explicit compatibility mode
+for hosts that intentionally use it with Docker's iptables firewall backend.
+Hosts using `iptables-nft` use its separate compatibility CLI; Docker's native
 `nftables` driver uses an owned nft table and Docker's documented bridge
-firewall-mark integration. They are distinct modes, not interchangeable
-spellings for the same rules. Native startup inspects old `iptables-nft`
+firewall-mark integration. Ubuntu version does not select a mode: even on
+Ubuntu 26.04 or later, use Docker's actual firewall driver and, for its
+iptables driver, the active iptables frontend. An explicit mismatch fails at
+startup. These are distinct modes, not interchangeable spellings for the same
+rules. Native startup inspects old `iptables-nft`
 rules and any already loaded legacy filter/NAT tables for active platform or
 Docker hooks and FORWARD DROP policy. It does not load legacy modules just to
 inspect an unused frontend. Docker's iptables modes also reject active

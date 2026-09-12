@@ -58,9 +58,12 @@ The primary executable is `network-plugin-manager`. Its default metadata endpoin
 The new `--firewall-backend` setting separates `auto`, `iptables-nft`,
 `iptables-legacy`, and Docker's native `nftables`. `auto` follows the Docker
 daemon's reported firewall backend and, for Docker's iptables backend, the
-active iptables frontend. The manager **never** selects legacy merely because
-its executable exists, falls back to legacy after a failure, or enables legacy
-kernel modules. An explicit mode that disagrees with Docker fails at startup.
+active iptables frontend. Ubuntu 26.04 and later can also intentionally run
+Docker with `iptables-legacy` or `iptables-nft`; the OS release alone never
+selects `nftables` or triggers a backend migration. The manager **never**
+selects legacy merely because its executable exists, falls back to legacy
+after a failure, or enables legacy kernel modules. An explicit mode that
+disagrees with Docker fails at startup.
 
 For Docker 29's native nftables backend, configure the Docker daemon with
 `"firewall-backend": "nftables"` and
@@ -71,10 +74,11 @@ checks Docker's installed mark rule and rejects stale platform xtables hooks,
 active Docker xtables NAT hooks, or an old xtables FORWARD DROP policy in the
 loaded frontends. It reports these conditions for
 an operator to migrate explicitly; it does not change a global FORWARD policy
-or rewrite Docker's own nftables tables. Existing legacy installations keep
-their explicitly selected compatibility path. Do not switch a production host
-between backends without a backup and a maintenance-window verification of
-container egress, DNS, host ports, Docker restart, and host reboot.
+or rewrite Docker's own nftables tables. Hosts using `iptables-legacy` keep
+their explicitly selected compatibility path regardless of Ubuntu version.
+Do not switch a production host between backends without a backup and a
+maintenance-window verification of container egress, DNS, host ports, Docker
+restart, and host reboot.
 
 On an `iptables-nft` host, a loaded legacy NAT table is inspected with the
 dedicated `iptables-legacy` executable. An old `CATTLE_*` hook there does not
