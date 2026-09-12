@@ -37,3 +37,16 @@ migrating a legacy host must audit and remove its pre-existing legacy rules
 under their own change control before enabling Docker native nftables; this
 component never auto-imports or silently deletes such rules. The retained
 metadata network schema and host-port rules are IPv4-only.
+
+For the v0.8.13 upgrade case where Docker uses `iptables-nft` but a previous
+manager left `CATTLE_*` hooks in a loaded legacy NAT table, use the dedicated
+`iptables-legacy` frontend for inspection; the generic `iptables` alternative
+may point to nft and cannot prove what is in the legacy table. Stop the old
+dual-writing manager before changing rules. Save the affected legacy NAT and
+filter tables, then verify that any proposed removal targets only exact
+platform-owned `CATTLE_*` hooks and chains, with no Docker or third-party
+references. Remove only those verified hooks and chains, read back both
+backends, and check workload egress, DNS, and host ports before returning the
+host to service. If ownership or references are unclear, stop and investigate.
+Never flush a whole table, change a global policy, remove Docker rules, load
+legacy modules as a workaround, or silently fall back to another backend.

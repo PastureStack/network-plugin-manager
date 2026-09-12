@@ -26,5 +26,6 @@ DOCKER_BUILDKIT=${DOCKER_BUILDKIT:-1} docker build \
     --build-arg "SOURCE_DATE_EPOCH=${source_epoch}" \
     --build-arg "ALPINE_BRANCH=3.23" \
     -t "${image}" -f package/Dockerfile .
+docker run --rm --network none --entrypoint iptables-legacy "${image}" --version | grep -Fq '(legacy)'
 printf '%s\n' "${image}" > dist/images
 printf 'Built %s\n' "${image}"
