@@ -9,9 +9,17 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 ## Runtime image
 
 The `v0.8.11` source tag exists, but its GHCR image publication did not
-complete. Do not treat that tag as a deployable release. `v0.8.12` is the next
-intended release; its image, digest, SBOMs, provenance, and Catalog reference
-remain pending until publication and verification finish.
+complete. Do not treat that tag as a deployable release. The `v0.8.12` image
+has been published with manifest digest
+`sha256:f210ecc8519528feb79d68ba70b4fc3f99c6b4f4afe20af156bb68601c73edb7`;
+the release workflow produced its SBOM and provenance attestations. The
+Catalog integration and the complete control-plane host lifecycle gate are
+separate from image publication. On an isolated Ubuntu 26.04.1 / Docker 29.8
+VM, the published source passed native-backend detection, metadata watcher
+readiness/failure retention, overlay-source-preserving egress/DNS/HTTPS, and
+same-/cross-bridge host-port traffic, including after Docker restart and host
+reboot. These tests do not establish multi-host rollout or existing-stack
+upgrade safety; those gates remain pending.
 
 The maintained image coordinate is:
 
