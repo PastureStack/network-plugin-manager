@@ -1,6 +1,7 @@
 package hostnat
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -26,7 +27,7 @@ func TestNativeNFTTrafficOnDisposableVM(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Fatal("native nft traffic integration test requires root")
 	}
-	for _, name := range []string{"docker", "nft", "ip", "sysctl", "ping", "getent", "curl"} {
+	for _, name := range []string{"docker", "nft", "ip", "sysctl", "ping", "getent", "curl", "python3"} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Fatal(err)
 		}
@@ -43,26 +44,38 @@ func TestNativeNFTTrafficOnDisposableVM(t *testing.T) {
 	id := fmt.Sprintf("%x", os.Getpid())
 	bridge, hostVeth, nsVeth := "pnbr"+id, "pnvh"+id, "pnvn"+id
 	ns, table := "pasture-nat-qa-"+id, "pasturestack_hostnat_traffic_"+id
-	if len(bridge) > 15 || len(hostVeth) > 15 || len(nsVeth) > 15 {
+	peerBridge, peerHostVeth, peerNSVeth := "prbr"+id, "prvh"+id, "prvn"+id
+	peerNS := "pasture-nat-peer-" + id
+	if len(bridge) > 15 || len(hostVeth) > 15 || len(nsVeth) > 15 || len(peerBridge) > 15 || len(peerHostVeth) > 15 || len(peerNSVeth) > 15 {
 		t.Fatal("test interface name exceeds Linux IFNAMSIZ")
 	}
-	for _, dev := range []string{bridge, hostVeth, nsVeth} {
+	for _, dev := range []string{bridge, hostVeth, nsVeth, peerBridge, peerHostVeth, peerNSVeth} {
 		if out, err := vmNATTry("ip", "link", "show", "dev", dev); err == nil {
 			t.Fatalf("refusing to replace existing interface %s: %s", dev, out)
 		}
 	}
-	if out := vmNATCommand(t, "ip", "netns", "list"); strings.Contains(out, ns+" ") || strings.Contains(out, ns+"\n") {
-		t.Fatalf("refusing to replace existing network namespace %s", ns)
+	for _, name := range []string{ns, peerNS} {
+		if out := vmNATCommand(t, "ip", "netns", "list"); strings.Contains(out, name+" ") || strings.Contains(out, name+"\n") {
+			t.Fatalf("refusing to replace existing network namespace %s", name)
+		}
 	}
 	if out := vmNATCommand(t, "nft", "list", "tables", "ip"); strings.Contains(out, "table ip "+table) {
 		t.Fatalf("refusing to replace existing nft table %s", table)
 	}
-	if out := vmNATCommand(t, "ip", "route", "show", "10.42.251.0/24"); strings.TrimSpace(out) != "" {
-		t.Fatalf("test subnet already routed on host: %s", out)
+	for _, subnet := range []string{"10.42.251.0/24", "10.42.252.0/24"} {
+		if out := vmNATCommand(t, "ip", "route", "show", subnet); strings.TrimSpace(out) != "" {
+			t.Fatalf("test subnet %s already routed on host: %s", subnet, out)
+		}
 	}
 	confDir := filepath.Join("/etc/netns", ns)
+	peerConfDir := filepath.Join("/etc/netns", peerNS)
 	if _, err := os.Stat(confDir); err == nil {
 		t.Fatalf("refusing to replace existing resolver directory %s", confDir)
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(peerConfDir); err == nil {
+		t.Fatalf("refusing to replace existing resolver directory %s", peerConfDir)
 	} else if !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
@@ -72,6 +85,7 @@ func TestNativeNFTTrafficOnDisposableVM(t *testing.T) {
 	}
 
 	bridgeMade, vethMade, nsMade, tableMade, resolverMade, resolverParentMade := false, false, false, false, false, false
+	peerBridgeMade, peerVethMade, peerNSMade := false, false, false
 	t.Cleanup(func() {
 		if tableMade {
 			vmNATCleanup(t, "nft", "delete", "table", "ip", table)
@@ -86,6 +100,17 @@ func TestNativeNFTTrafficOnDisposableVM(t *testing.T) {
 		}
 		if bridgeMade {
 			vmNATCleanup(t, "ip", "link", "del", bridge)
+		}
+		if peerVethMade {
+			if _, err := vmNATTry("ip", "link", "show", "dev", peerHostVeth); err == nil {
+				vmNATCleanup(t, "ip", "link", "del", peerHostVeth)
+			}
+		}
+		if peerNSMade {
+			vmNATCleanup(t, "ip", "netns", "del", peerNS)
+		}
+		if peerBridgeMade {
+			vmNATCleanup(t, "ip", "link", "del", peerBridge)
 		}
 		if resolverMade {
 			if err := os.Remove(filepath.Join(confDir, "resolv.conf")); err != nil {
@@ -117,6 +142,21 @@ func TestNativeNFTTrafficOnDisposableVM(t *testing.T) {
 	vmNATCommand(t, "ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up")
 	vmNATCommand(t, "ip", "netns", "exec", ns, "ip", "link", "set", nsVeth, "up")
 	vmNATCommand(t, "ip", "netns", "exec", ns, "ip", "route", "add", "default", "via", "10.42.251.1")
+	vmNATCommand(t, "ip", "link", "add", peerBridge, "type", "bridge")
+	peerBridgeMade = true
+	vmNATCommand(t, "ip", "addr", "add", "10.42.252.1/24", "dev", peerBridge)
+	vmNATCommand(t, "ip", "link", "set", peerBridge, "up")
+	vmNATCommand(t, "ip", "netns", "add", peerNS)
+	peerNSMade = true
+	vmNATCommand(t, "ip", "link", "add", peerHostVeth, "type", "veth", "peer", "name", peerNSVeth)
+	peerVethMade = true
+	vmNATCommand(t, "ip", "link", "set", peerHostVeth, "master", peerBridge)
+	vmNATCommand(t, "ip", "link", "set", peerHostVeth, "up")
+	vmNATCommand(t, "ip", "link", "set", peerNSVeth, "netns", peerNS)
+	vmNATCommand(t, "ip", "netns", "exec", peerNS, "ip", "addr", "add", "10.42.252.2/24", "dev", peerNSVeth)
+	vmNATCommand(t, "ip", "netns", "exec", peerNS, "ip", "link", "set", "lo", "up")
+	vmNATCommand(t, "ip", "netns", "exec", peerNS, "ip", "link", "set", peerNSVeth, "up")
+	vmNATCommand(t, "ip", "netns", "exec", peerNS, "ip", "route", "add", "default", "via", "10.42.252.1")
 	if _, err := os.Stat("/etc/netns"); os.IsNotExist(err) {
 		if err := os.Mkdir("/etc/netns", 0755); err != nil {
 			t.Fatal(err)
@@ -167,6 +207,9 @@ func TestNativeNFTTrafficOnDisposableVM(t *testing.T) {
 	if out := vmNATCommand(t, "nft", "list", "chain", "ip", table, "postrouting"); !strings.Contains(out, "10.42.0.0/16") || !strings.Contains(out, "masquerade") {
 		t.Fatalf("production MASQ rule missing: %s", out)
 	}
+	if got := vmNATPeerObservedSource(t, ns, peerNS); got != "10.42.251.2" {
+		t.Fatalf("overlay-to-overlay packet was SNATed: source=%s, want 10.42.251.2", got)
+	}
 	vmNATCommand(t, "ip", "netns", "exec", ns, "ping", "-c", "1", "-W", "5", "1.1.1.1")
 	if out := vmNATCommand(t, "ip", "netns", "exec", ns, "getent", "ahostsv4", "example.com"); strings.TrimSpace(out) == "" {
 		t.Fatal("DNS returned no IPv4 address")
@@ -174,7 +217,54 @@ func TestNativeNFTTrafficOnDisposableVM(t *testing.T) {
 	if out := vmNATCommand(t, "ip", "netns", "exec", ns, "curl", "-4", "--fail", "--silent", "--show-error", "--max-time", "20", "-I", "https://example.com"); !strings.Contains(out, "HTTP/") {
 		t.Fatalf("HTTPS returned no HTTP response: %s", out)
 	}
-	t.Log("production hostnat apply enabled isolated 10.42/16 IPv4 egress, DNS and HTTPS on Docker native nftables")
+	t.Log("production hostnat preserved overlay peer source and enabled isolated 10.42/16 IPv4 egress, DNS and HTTPS on Docker native nftables")
+}
+
+func vmNATPeerObservedSource(t *testing.T, sourceNS, peerNS string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	server := exec.CommandContext(ctx, "ip", "netns", "exec", peerNS, "python3", "-u", "-c", `import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("10.42.252.2", 43291))
+s.settimeout(10)
+print("READY", flush=True)
+_, address = s.recvfrom(32)
+print(address[0], flush=True)`)
+	stdout, err := server.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	server.Stderr = &stderr
+	if err := server.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			cancel()
+			_ = server.Wait()
+		}
+	}()
+	reader := bufio.NewReader(stdout)
+	ready, err := reader.ReadString('\n')
+	if err != nil || strings.TrimSpace(ready) != "READY" {
+		t.Fatalf("overlay peer did not start: ready=%q error=%v stderr=%s", ready, err, stderr.String())
+	}
+	vmNATCommand(t, "ip", "netns", "exec", sourceNS, "python3", "-c", `import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.sendto(b"overlay-source-check", ("10.42.252.2", 43291))`)
+	observed, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("overlay peer did not receive packet: %v: %s", err, stderr.String())
+	}
+	err = server.Wait()
+	waited = true
+	if err != nil {
+		t.Fatalf("overlay peer failed: %v: %s", err, stderr.String())
+	}
+	return strings.TrimSpace(observed)
 }
 
 func vmNATResolver() (string, error) {

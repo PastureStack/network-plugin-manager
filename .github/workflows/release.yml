@@ -167,7 +167,7 @@ jobs:
         id: publish
         shell: bash
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN || github.token }}
+          GHCR_TOKEN: ${{ github.token }}
           SERVICE_IMAGE: ${{ steps.release_meta.outputs.service_image }}
         run: |
           set -euo pipefail

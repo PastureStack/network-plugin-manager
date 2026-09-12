@@ -497,9 +497,9 @@ func nftNATScriptForTable(rules ruleSet, table string) []byte {
 	for _, key := range masqKeys {
 		rule := rules.MASQ[key]
 		for _, protocol := range []string{"tcp", "udp"} {
-			fmt.Fprintf(buf, "add rule ip %s postrouting ip saddr %s oifname != \"%s\" meta l4proto %s masquerade to :1024-65535\n", table, rule.Subnet, rule.Bridge, protocol)
+			fmt.Fprintf(buf, "add rule ip %s postrouting ip saddr %s ip daddr != %s oifname != \"%s\" meta l4proto %s masquerade to :1024-65535\n", table, rule.Subnet, rule.Subnet, rule.Bridge, protocol)
 		}
-		fmt.Fprintf(buf, "add rule ip %s postrouting ip saddr %s oifname != \"%s\" masquerade\n", table, rule.Subnet, rule.Bridge)
+		fmt.Fprintf(buf, "add rule ip %s postrouting ip saddr %s ip daddr != %s oifname != \"%s\" masquerade\n", table, rule.Subnet, rule.Subnet, rule.Bridge)
 		fmt.Fprintf(buf, "add rule ip %s postrouting oifname \"%s\" fib saddr type local fib daddr type unicast masquerade\n", table, rule.Bridge)
 	}
 	return buf.Bytes()
