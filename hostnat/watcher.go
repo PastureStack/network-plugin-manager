@@ -88,9 +88,11 @@ type IKEPortSNATRule struct {
 
 func (p MASQRule) iptables() []byte {
 	buf := &bytes.Buffer{}
-	buf.WriteString(fmt.Sprintf("-A %s -p tcp -s %s ! -o %s -j MASQUERADE --to-ports 1024-65535\n", natChain, p.Subnet, p.Bridge))
-	buf.WriteString(fmt.Sprintf("-A %s -p udp -s %s ! -o %s -j MASQUERADE --to-ports 1024-65535\n", natChain, p.Subnet, p.Bridge))
-	buf.WriteString(fmt.Sprintf("-A %s -s %s ! -o %s -j MASQUERADE\n", natChain, p.Subnet, p.Bridge))
+	// Keep same-subnet overlay traffic's original source IP. This must live in
+	// the manager-owned NAT rule, not in a second plugin's chain mutation.
+	buf.WriteString(fmt.Sprintf("-A %s -p tcp -s %s ! -d %s ! -o %s -j MASQUERADE --to-ports 1024-65535\n", natChain, p.Subnet, p.Subnet, p.Bridge))
+	buf.WriteString(fmt.Sprintf("-A %s -p udp -s %s ! -d %s ! -o %s -j MASQUERADE --to-ports 1024-65535\n", natChain, p.Subnet, p.Subnet, p.Bridge))
+	buf.WriteString(fmt.Sprintf("-A %s -s %s ! -d %s ! -o %s -j MASQUERADE\n", natChain, p.Subnet, p.Subnet, p.Bridge))
 
 	// LOCAL src
 	buf.WriteString(fmt.Sprintf("-A %s -o %s -m addrtype --src-type LOCAL --dst-type UNICAST -j MASQUERADE", natChain, p.Bridge))

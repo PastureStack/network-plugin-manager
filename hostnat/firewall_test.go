@@ -11,6 +11,16 @@ import (
 	"github.com/PastureStack/network-plugin-manager/internal/firewall"
 )
 
+func TestXTMasqueradePreservesSameSubnetSource(t *testing.T) {
+	script := string((MASQRule{Subnet: "10.42.0.0/16", Bridge: "pst0"}).iptables())
+	if got := strings.Count(script, "-s 10.42.0.0/16 ! -d 10.42.0.0/16 ! -o pst0"); got != 3 {
+		t.Fatalf("expected all three xtables masquerade rules to exclude same-subnet destinations, got %d: %s", got, script)
+	}
+	if strings.Count(script, "-j MASQUERADE") != 4 {
+		t.Fatalf("expected three egress and one local-routing masquerade rule: %s", script)
+	}
+}
+
 func TestNATRejectsMalformedMetadataBeforeMutation(t *testing.T) {
 	cases := map[string]ruleSet{
 		"global-subnet": {MASQ: map[string]MASQRule{"n": {Subnet: "0.0.0.0/0", Bridge: "pst0"}}},

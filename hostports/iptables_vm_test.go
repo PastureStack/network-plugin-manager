@@ -14,19 +14,32 @@ import (
 // This is deliberately absent from normal CI. Run only in a disposable VM
 // with Docker's iptables firewall backend; never against a production host.
 func TestIptablesNFTOnDisposableVM(t *testing.T) {
+	testIptablesOnDisposableVM(t, firewall.IptablesNFT)
+}
+
+func TestIptablesLegacyOnDisposableVM(t *testing.T) {
+	testIptablesOnDisposableVM(t, firewall.IptablesLegacy)
+}
+
+func testIptablesOnDisposableVM(t *testing.T, mode firewall.Mode) {
 	if os.Getenv("PASTURESTACK_IPTABLES_VM_TEST") != "1" {
 		t.Skip("requires explicit isolated VM opt-in")
 	}
 	if os.Geteuid() != 0 {
 		t.Fatal("xtables integration test requires root in the disposable VM")
 	}
-	for _, name := range []string{"iptables-nft", "iptables-nft-restore"} {
+	command, restore := string(mode), string(mode)+"-restore"
+	for _, name := range []string{command, restore} {
 		if _, err := exec.LookPath(name); err != nil {
 			t.Fatal(err)
 		}
 		out, err := exec.Command(name, "--version").CombinedOutput()
-		if err != nil || !strings.Contains(string(out), "nf_tables") {
-			t.Fatalf("%s is not an nf_tables frontend: %v: %s", name, err, out)
+		marker := "nf_tables"
+		if mode == firewall.IptablesLegacy {
+			marker = "legacy"
+		}
+		if err != nil || !strings.Contains(string(out), marker) {
+			t.Fatalf("%s is not the %s frontend: %v: %s", name, mode, err, out)
 		}
 	}
 	dc, err := client.New(client.FromEnv)
@@ -41,8 +54,18 @@ func TestIptablesNFTOnDisposableVM(t *testing.T) {
 	if info.Info.FirewallBackend == nil || info.Info.FirewallBackend.Driver != "iptables" {
 		t.Fatalf("refusing xtables test outside Docker iptables mode: %#v", info.Info.FirewallBackend)
 	}
+	if out, err := exec.Command(command, "-t", "nat", "-S", "DOCKER").CombinedOutput(); err != nil {
+		t.Fatalf("requires Docker-owned NAT chain in %s: %v: %s", mode, err, out)
+	}
+	other := "iptables-nft"
+	if mode == firewall.IptablesNFT {
+		other = "iptables-legacy"
+	}
+	if out, err := exec.Command(other, "-t", "nat", "-S", "DOCKER").CombinedOutput(); err == nil {
+		t.Fatalf("refusing dual Docker backends; %s also owns NAT: %s", other, out)
+	}
 	for _, table := range []string{"nat", "filter"} {
-		out, err := xtVMCommand("-t", table, "-S")
+		out, err := xtVMCommand(command, "-t", table, "-S")
 		if err != nil {
 			t.Fatalf("inspect existing %s rules: %v: %s", table, err, out)
 		}
@@ -50,14 +73,14 @@ func TestIptablesNFTOnDisposableVM(t *testing.T) {
 			t.Fatalf("refusing to touch existing CATTLE chains in %s: %s", table, out)
 		}
 	}
-	t.Cleanup(func() { cleanupXTTestRules(t) })
+	t.Cleanup(func() { cleanupXTTestRules(t, command) })
 	rules := ruleSet{
 		Ports: map[string]PortRule{
 			"isolated": {Bridge: "pstest0", SourceIP: "198.51.100.2", SourcePort: "55555", TargetIP: "10.254.250.2", TargetPort: "55556", Protocol: "tcp"},
 		},
 		ForwardSubnets: map[string]string{"isolated": "10.254.250.0/24"},
 	}
-	w := &watcher{backend: firewall.Backend{Mode: firewall.IptablesNFT, Command: "iptables-nft", Restore: "iptables-nft-restore"}}
+	w := &watcher{backend: firewall.Backend{Mode: mode, Command: command, Restore: restore}}
 	for attempt := 1; attempt <= 2; attempt++ {
 		if err := w.apply(rules); err != nil {
 			t.Fatalf("iptables-nft apply %d (includes --test -n): %v", attempt, err)
@@ -68,7 +91,7 @@ func TestIptablesNFTOnDisposableVM(t *testing.T) {
 			{"nat", "POSTROUTING", hostPortsPostRoutingChain},
 			{"filter", "FORWARD", "CATTLE_FORWARD"},
 		} {
-			out, err := xtVMCommand("-t", hook.table, "-S", hook.chain)
+			out, err := xtVMCommand(command, "-t", hook.table, "-S", hook.chain)
 			if err != nil {
 				t.Fatalf("inspect %s/%s after apply %d: %v: %s", hook.table, hook.chain, attempt, err, out)
 			}
@@ -79,11 +102,11 @@ func TestIptablesNFTOnDisposableVM(t *testing.T) {
 	}
 }
 
-func xtVMCommand(args ...string) ([]byte, error) {
-	return exec.Command("iptables-nft", append([]string{"-w"}, args...)...).CombinedOutput()
+func xtVMCommand(command string, args ...string) ([]byte, error) {
+	return exec.Command(command, append([]string{"-w"}, args...)...).CombinedOutput()
 }
 
-func cleanupXTTestRules(t *testing.T) {
+func cleanupXTTestRules(t *testing.T, command string) {
 	for _, hook := range []struct {
 		table, chain string
 		spec         []string
@@ -96,10 +119,10 @@ func cleanupXTTestRules(t *testing.T) {
 		check := append([]string{"-t", hook.table, "-C", hook.chain}, hook.spec...)
 		deleteArgs := append([]string{"-t", hook.table, "-D", hook.chain}, hook.spec...)
 		for {
-			if _, err := xtVMCommand(check...); err != nil {
+			if _, err := xtVMCommand(command, check...); err != nil {
 				break
 			}
-			if out, err := xtVMCommand(deleteArgs...); err != nil {
+			if out, err := xtVMCommand(command, deleteArgs...); err != nil {
 				t.Errorf("remove own hook %s/%s: %v: %s", hook.table, hook.chain, err, out)
 				break
 			}
@@ -112,19 +135,19 @@ func cleanupXTTestRules(t *testing.T) {
 		{"nat", hostPortsPostRoutingChain},
 		{"filter", "CATTLE_FORWARD"},
 	} {
-		if _, err := xtVMCommand("-t", entry.table, "-S", entry.chain); err != nil {
+		if _, err := xtVMCommand(command, "-t", entry.table, "-S", entry.chain); err != nil {
 			continue // A failed apply may never have created this chain.
 		}
-		if out, err := xtVMCommand("-t", entry.table, "-F", entry.chain); err != nil {
+		if out, err := xtVMCommand(command, "-t", entry.table, "-F", entry.chain); err != nil {
 			t.Errorf("flush own chain %s/%s: %v: %s", entry.table, entry.chain, err, out)
 			continue
 		}
-		if out, err := xtVMCommand("-t", entry.table, "-X", entry.chain); err != nil {
+		if out, err := xtVMCommand(command, "-t", entry.table, "-X", entry.chain); err != nil {
 			t.Errorf("delete own chain %s/%s: %v: %s", entry.table, entry.chain, err, out)
 		}
 	}
 	for _, table := range []string{"nat", "filter"} {
-		out, err := xtVMCommand("-t", table, "-S")
+		out, err := xtVMCommand(command, "-t", table, "-S")
 		if err != nil {
 			t.Errorf("verify %s cleanup: %v: %s", table, err, out)
 		} else if strings.Contains(string(out), "CATTLE_") {

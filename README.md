@@ -84,10 +84,14 @@ hook or an uninspectable loaded table. The manager writes only to Docker's
 selected backend and never silently removes old hooks. See the bounded cleanup steps
 in [COMPATIBILITY.md](COMPATIBILITY.md).
 
-Native host NAT excludes destinations within each network's configured
-`bridgeSubnet` from its general masquerade rules, preserving overlay source
-addresses for same-subnet peer traffic. The IKE SNAT and legacy xtables rules
-are unchanged; cross-host behavior still needs deployment-level validation.
+Host NAT in all three backends excludes destinations within each network's
+configured `bridgeSubnet` from its general masquerade rules, preserving the
+source address for same-subnet overlay traffic. This component alone owns its
+host NAT and host-port chains; the IPsec router must not insert bypasses or
+forwarding rules into them. IKE SNAT and container-namespace compatibility
+rules are separate. Upgrade this manager and verify it is healthy before
+upgrading the IPsec router that no longer writes a compensating host bypass.
+Cross-host behavior still requires deployment-level validation.
 
 The image healthcheck waits until both the host NAT and host-port watchers
 have successfully reconciled current metadata. A transient metadata delay
