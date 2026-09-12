@@ -21,13 +21,20 @@ same-/cross-bridge host-port traffic, including after Docker restart and host
 reboot. These tests do not establish multi-host rollout or existing-stack
 upgrade safety; those gates remain pending.
 
-The v0.8.13 candidate addresses a separate upgrade failure on hosts where
-Docker uses `iptables-nft` but an older platform manager left a loaded legacy
-NAT table with `CATTLE_*` hooks. Its image includes a pinned, independent
-`iptables-legacy` executable so startup can inspect that table without
-mistaking the generic `iptables` alternative for the legacy frontend. This
-does not migrate or remove the old rules; verify the published image and
-complete the host migration gate before using it in production.
+The v0.8.13 source addresses a separate upgrade failure on hosts where
+Docker uses iptables-nft but an older manager left a loaded legacy NAT table
+with CATTLE_* hooks. The image built from this source includes a pinned,
+independent iptables-legacy executable, so startup can inspect that table
+without mistaking the generic iptables alternative for the legacy frontend.
+
+A bounded two-host upgrade gate passed after operator-controlled cleanup of
+old platform hooks: both hosts retained nft Docker hooks, the new manager was
+healthy, Metadata and IPsec services ran, and metadata network namespaces
+resolved DNS and reached the management ping. A service port on the second
+host returned HTTP 200. This component does not migrate or remove old rules
+automatically. Verify the official image digest and perform controlled host
+migration for each deployment. The complete Ubuntu 26.04 native-nft
+control-plane gate remains pending Catalog/Server integration.
 
 The maintained image coordinate is:
 
