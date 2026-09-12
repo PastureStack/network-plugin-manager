@@ -21,6 +21,14 @@ same-/cross-bridge host-port traffic, including after Docker restart and host
 reboot. These tests do not establish multi-host rollout or existing-stack
 upgrade safety; those gates remain pending.
 
+The v0.8.13 candidate addresses a separate upgrade failure on hosts where
+Docker uses `iptables-nft` but an older platform manager left a loaded legacy
+NAT table with `CATTLE_*` hooks. Its image includes a pinned, independent
+`iptables-legacy` executable so startup can inspect that table without
+mistaking the generic `iptables` alternative for the legacy frontend. This
+does not migrate or remove the old rules; verify the published image and
+complete the host migration gate before using it in production.
+
 The maintained image coordinate is:
 
 ```text
@@ -53,6 +61,13 @@ their explicitly selected compatibility path. Do not switch a production host
 between backends without a backup and a maintenance-window verification of
 container egress, DNS, host ports, Docker restart, and host reboot.
 
+On an `iptables-nft` host, a loaded legacy NAT table is inspected with the
+dedicated `iptables-legacy` executable. An old `CATTLE_*` hook there does not
+make legacy Docker's active backend; an active legacy Docker NAT hook or an
+uninspectable table fails closed. The manager writes only to Docker's selected
+backend and never silently removes old hooks. See the bounded cleanup steps
+in [COMPATIBILITY.md](COMPATIBILITY.md).
+
 Native host NAT excludes destinations within each network's configured
 `bridgeSubnet` from its general masquerade rules, preserving overlay source
 addresses for same-subnet peer traffic. The IKE SNAT and legacy xtables rules
@@ -77,7 +92,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.8.12 IMAGE_NAMESPACE=local/pasturestack make package
+VERSION_OVERRIDE=v0.8.13 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.

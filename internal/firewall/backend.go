@@ -158,7 +158,7 @@ func DetectDockerXTFrontend(lookup lookupFunc, version versionFunc, inspect insp
 
 	legacyActive := false
 	if legacyNATLoaded {
-		legacyCommand, err := inspectionCommand(IptablesLegacy, lookup, version)
+		legacyCommand, err := legacyInspectionCommand(lookup, version)
 		if err != nil {
 			return "", fmt.Errorf("legacy NAT table is loaded but its Docker rules cannot be inspected: %w", err)
 		}
@@ -178,6 +178,24 @@ func DetectDockerXTFrontend(lookup lookupFunc, version versionFunc, inspect insp
 	default:
 		return "", fmt.Errorf("no unique active Docker NAT DOCKER chain was found in iptables-nft or loaded iptables-legacy; start Docker's bridge networking and verify its firewall backend before starting the network manager")
 	}
+}
+
+// Inspect a loaded legacy table only through its dedicated frontend. Falling
+// back to the generic iptables alternative could read nft rules instead and
+// hide a second active Docker backend (or reject an otherwise valid nft host).
+func legacyInspectionCommand(lookup lookupFunc, version versionFunc) (string, error) {
+	const command = "iptables-legacy"
+	if _, err := lookup(command); err != nil {
+		return "", fmt.Errorf("find %s: %w", command, err)
+	}
+	out, err := version(command)
+	if err != nil {
+		return "", fmt.Errorf("verify %s version: %w", command, err)
+	}
+	if !strings.Contains(out, "(legacy)") {
+		return "", fmt.Errorf("%s is not the legacy frontend: %s", command, strings.TrimSpace(out))
+	}
+	return command, nil
 }
 
 // Only an absent/wrong generic alternative or an explicitly unsupported
@@ -220,25 +238,6 @@ func nftBackendUnavailable(output []byte) bool {
 		strings.Contains(message, "operation not supported") ||
 		strings.Contains(message, "address family not supported") ||
 		strings.Contains(message, "could not fetch rule set generation id: invalid argument")
-}
-
-func inspectionCommand(mode Mode, lookup lookupFunc, version versionFunc) (string, error) {
-	command := string(mode)
-	marker := "nf_tables"
-	if mode == IptablesLegacy {
-		marker = "legacy"
-	}
-	if _, err := lookup(command); err != nil {
-		command = "iptables"
-	}
-	if _, err := lookup(command); err != nil {
-		return "", err
-	}
-	out, err := version(command)
-	if err != nil || !strings.Contains(out, marker) {
-		return "", fmt.Errorf("%s is not the %s frontend: %s", command, mode, strings.TrimSpace(out))
-	}
-	return command, nil
 }
 
 func hasDockerNATChain(rules []byte) bool {

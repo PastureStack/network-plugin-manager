@@ -18,6 +18,7 @@ RUN set -eux; \
         "gawk=${ALPINE_APK_GAWK_VERSION}" \
         "iproute2=${ALPINE_APK_IPROUTE2_VERSION}" \
         "iptables=${ALPINE_APK_IPTABLES_VERSION}" \
+        "iptables-legacy=${ALPINE_APK_IPTABLES_LEGACY_VERSION}" \
         "jq=${ALPINE_APK_JQ_VERSION}" \
         "libcrypto3=${ALPINE_APK_LIBCRYPTO3_VERSION}" \
         "libssl3=${ALPINE_APK_LIBSSL3_VERSION}" \

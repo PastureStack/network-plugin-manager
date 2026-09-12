@@ -146,6 +146,8 @@ func TestDetectDockerXTFrontendUsesDockerChainsWithoutLegacyAutoload(t *testing.
 		{"neither Docker chain fails closed", "-N OTHER\n", "-N OTHER\n", "nat\n", "", true, 1},
 		{"legacy table without nat is not probed", dockerNAT, dockerNAT, "filter\n", IptablesNFT, false, 0},
 		{"unhooked stale legacy chain does not count", dockerNAT, "-N DOCKER\n", "nat\n", IptablesNFT, false, 1},
+		{"old platform hook without legacy Docker is inspected but not selected", dockerNAT, "-N CATTLE_NAT_POSTROUTING\n-A POSTROUTING -j CATTLE_NAT_POSTROUTING\n", "nat\n", IptablesNFT, false, 1},
+		{"old platform hook cannot hide a second Docker backend", dockerNAT, dockerNAT + "-N CATTLE_NAT_POSTROUTING\n-A POSTROUTING -j CATTLE_NAT_POSTROUTING\n", "nat\n", "", true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			legacyProbes := 0
@@ -174,19 +176,37 @@ func TestDetectDockerXTFrontendUsesDockerChainsWithoutLegacyAutoload(t *testing.
 }
 
 func TestDetectDockerXTFrontendFailsClosedWhenLegacyCannotBeInspected(t *testing.T) {
-	lookup := func(name string) (string, error) {
-		if name == "iptables-legacy" || name == "iptables" {
-			return "", os.ErrNotExist
-		}
-		return "/usr/sbin/" + name, nil
-	}
-	versions := func(string) (string, error) { return "iptables v1.8.11 (nf_tables)", nil }
-	inspect := func(string, ...string) ([]byte, error) {
-		return []byte("-N DOCKER\n-A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER\n"), nil
-	}
-	readFile := func(string) ([]byte, error) { return []byte("nat\n"), nil }
-	if _, err := DetectDockerXTFrontend(lookup, versions, inspect, readFile); err == nil {
-		t.Fatal("selected nft even though a loaded legacy NAT table could not be inspected")
+	for _, tc := range []struct {
+		name, legacyVersion string
+		legacyExists        bool
+	}{
+		{"dedicated binary missing", "", false},
+		{"dedicated binary points to nft", "iptables v1.8.11 (nf_tables)", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := func(name string) (string, error) {
+				if name == "iptables-legacy" && !tc.legacyExists {
+					return "", os.ErrNotExist
+				}
+				return "/usr/sbin/" + name, nil
+			}
+			versions := func(name string) (string, error) {
+				if name == "iptables-legacy" {
+					return tc.legacyVersion, nil
+				}
+				return "iptables v1.8.11 (nf_tables)", nil
+			}
+			inspect := func(name string, _ ...string) ([]byte, error) {
+				if name == "iptables" || name == "iptables-legacy" {
+					t.Fatalf("inspected legacy rules through an unverified frontend: %s", name)
+				}
+				return []byte("-N DOCKER\n-A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER\n"), nil
+			}
+			readFile := func(string) ([]byte, error) { return []byte("nat\n"), nil }
+			if _, err := DetectDockerXTFrontend(lookup, versions, inspect, readFile); err == nil {
+				t.Fatal("selected nft even though a loaded legacy NAT table could not be inspected")
+			}
+		})
 	}
 }
 
