@@ -12,8 +12,10 @@ import (
 	"github.com/PastureStack/network-plugin-manager/events"
 	"github.com/PastureStack/network-plugin-manager/hostnat"
 	"github.com/PastureStack/network-plugin-manager/hostports"
+	"github.com/PastureStack/network-plugin-manager/internal/firewall"
 	"github.com/PastureStack/network-plugin-manager/internal/logsafe"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
+	"github.com/PastureStack/network-plugin-manager/internal/readiness"
 	"github.com/PastureStack/network-plugin-manager/macsync"
 	"github.com/PastureStack/network-plugin-manager/network"
 	"github.com/PastureStack/network-plugin-manager/reaper"
@@ -54,6 +56,11 @@ func main() {
 				Name:  "debug",
 				Usage: "Turn on debug logging",
 			},
+			&cli.StringFlag{
+				Name:  "firewall-backend",
+				Value: "auto",
+				Usage: "Host firewall backend: auto, iptables-nft, iptables-legacy, or nftables (must match Docker)",
+			},
 		},
 		Action: run,
 	}
@@ -63,17 +70,32 @@ func main() {
 }
 
 func run(_ context.Context, c *cli.Command) error {
+	status, err := readiness.New(readiness.DefaultPath)
+	if err != nil {
+		return err
+	}
+	report := func(component readiness.Component) func(error) {
+		return func(reconcileErr error) {
+			if err := status.Report(component, reconcileErr); err != nil {
+				logrus.Errorf("Failed to update %s readiness: %s", component, logsafe.Value(err))
+			}
+		}
+	}
 	if c.Bool("debug") {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
 
-	if err := routesync.Watch(c.String("routesync-interval")); err != nil {
-		logrus.Errorf("Failed to start routesync: %s", logsafe.Value(err))
-		return err
-	}
-
 	dClient, err := client.New(client.FromEnv)
 	if err != nil {
+		return err
+	}
+	backend, err := firewall.Detect(dClient, firewall.Mode(c.String("firewall-backend")))
+	if err != nil {
+		return err
+	}
+	logrus.Infof("Using host firewall backend %s", backend.Mode)
+	if err := routesync.Watch(c.String("routesync-interval")); err != nil {
+		logrus.Errorf("Failed to start routesync: %s", logsafe.Value(err))
 		return err
 	}
 
@@ -92,16 +114,17 @@ func run(_ context.Context, c *cli.Command) error {
 		return err
 	}
 
+	if err := hostnat.Watch(mClient, dClient, backend, report(readiness.HostNAT)); err != nil {
+		return err
+	}
+
+	if err := hostports.Watch(mClient, dClient, backend, report(readiness.HostPorts)); err != nil {
+		logrus.Errorf("Failed to start host ports configuration: %s", logsafe.Value(err))
+		return err
+	}
+
 	if err := reaper.Watch(dClient, mClient); err != nil {
 		logrus.Errorf("Failed to start unmanaged container reaper: %s", logsafe.Value(err))
-	}
-
-	if err := hostports.Watch(mClient, dClient); err != nil {
-		logrus.Errorf("Failed to start host ports configuration: %s", logsafe.Value(err))
-	}
-
-	if err := hostnat.Watch(mClient, dClient); err != nil {
-		logrus.Errorf("Failed to start host nat configuration: %s", logsafe.Value(err))
 	}
 
 	if err := conntracksync.Watch(c.String("conntracksync-interval"), mClient, dClient); err != nil {

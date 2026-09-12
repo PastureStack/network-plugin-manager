@@ -3,6 +3,7 @@ package hostports
 import (
 	"bytes"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PastureStack/network-plugin-manager/identity"
+	"github.com/PastureStack/network-plugin-manager/internal/firewall"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
@@ -26,33 +28,47 @@ var (
 )
 
 // Watch is used to monitor metadata for changes
-func Watch(c metadata.Client, dc *client.Client) error {
+func Watch(c metadata.Client, dc *client.Client, backend firewall.Backend, report func(error)) error {
 	w := &watcher{
-		c:  c,
-		dc: dc,
+		c:       c,
+		dc:      dc,
+		backend: backend,
+		report:  report,
 		applied: ruleSet{
 			Ports:          map[string]PortRule{},
 			ForwardSubnets: map[string]string{},
 		},
 	}
 
-	if err := setupKernelParameters(); err != nil {
-		logrus.Errorf("error: %v", err)
+	// bridge-nf-call-iptables belongs to the xtables compatibility path.
+	// Native Docker nftables has its own IP-family bridge hooks and does not
+	// require the obsolete bridge sysctl (absent on a fresh Ubuntu 26.04 VM).
+	if backend.Mode != firewall.NFTables {
+		if err := setupKernelParameters(); err != nil {
+			logrus.Warnf("bridge netfilter sysctl unavailable: %v", err)
+		}
 	}
-
 	go w.repairBaseRulesNoError()
-	go c.OnChange(5, w.onChangeNoError)
+	go func() {
+		w.onChangeNoError("initial")
+		c.OnChange(5, w.onChangeNoError)
+	}()
 	return nil
 }
 
 type watcher struct {
-	c           metadata.Client
-	dc          *client.Client
-	applied     ruleSet
-	lastApplied time.Time
-	baseRuleMu  sync.Mutex
-	runCommand  func(args ...string) error
-	output      func(args ...string) ([]byte, error)
+	c            metadata.Client
+	dc           *client.Client
+	applied      ruleSet
+	lastApplied  time.Time
+	reconcileMu  sync.Mutex
+	baseRuleMu   sync.Mutex
+	backend      firewall.Backend
+	runCommand   func(args ...string) error
+	output       func(args ...string) ([]byte, error)
+	restoreRules func(name string, args []string, data []byte) error
+	report       func(error)
+	localHost    func(metadata.Client, *client.Client) (metadata.Host, error)
 }
 
 type ruleSet struct {
@@ -115,8 +131,13 @@ func (p PortRule) iptables() []byte {
 			p.Protocol, p.Protocol, p.SourcePort, p.SourceIP, p.TargetIP, p.TargetPort))
 	}
 
-	buf.WriteString(fmt.Sprintf("\n-A CATTLE_OUTPUT -p %v -m %v --dport %v -m addrtype --dst-type LOCAL -j DNAT --to-destination %v:%v",
-		p.Protocol, p.Protocol, p.SourcePort, p.TargetIP, p.TargetPort))
+	buf.WriteString(fmt.Sprintf("\n-A CATTLE_OUTPUT -p %v -m %v --dport %v -m addrtype --dst-type LOCAL",
+		p.Protocol, p.Protocol, p.SourcePort))
+	if p.SourceIP != "0.0.0.0" {
+		buf.WriteString(" -d ")
+		buf.WriteString(p.SourceIP)
+	}
+	buf.WriteString(fmt.Sprintf(" -j DNAT --to-destination %v:%v", p.TargetIP, p.TargetPort))
 
 	buf.WriteString(fmt.Sprintf("\n-A %s -s %v -d %v -p %v -m %v --dport %v -j MASQUERADE",
 		hostPortsPostRoutingChain, p.TargetIP, p.TargetIP, p.Protocol, p.Protocol, p.TargetPort))
@@ -125,25 +146,30 @@ func (p PortRule) iptables() []byte {
 }
 
 func (w *watcher) insertBaseRules() error {
+	if w.backend.Mode == firewall.NFTables {
+		return nil // Native nftables hooks live in our own base chains.
+	}
+	iptables := w.backend.Command
+	if iptables == "" {
+		return fmt.Errorf("hostports iptables command is not configured")
+	}
 	var errs []string
-	for _, iptables := range iptablesCommands("iptables") {
-		if w.run(iptables, "-w", "-t", "nat", "-C", "PREROUTING", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_PREROUTING") != nil {
-			if err := w.run(iptables, "-w", "-t", "nat", "-I", "PREROUTING", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_PREROUTING"); err != nil {
-				errs = append(errs, err.Error())
-			}
-		}
-		if err := w.ensureForwardJumpFirst(iptables); err != nil {
+	if w.run(iptables, "-w", "-t", "nat", "-C", "PREROUTING", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_PREROUTING") != nil {
+		if err := w.run(iptables, "-w", "-t", "nat", "-I", "PREROUTING", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_PREROUTING"); err != nil {
 			errs = append(errs, err.Error())
 		}
-		if w.run(iptables, "-w", "-t", "nat", "-C", "OUTPUT", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_OUTPUT") != nil {
-			if err := w.run(iptables, "-w", "-t", "nat", "-I", "OUTPUT", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_OUTPUT"); err != nil {
-				errs = append(errs, err.Error())
-			}
+	}
+	if err := w.ensureForwardJumpFirst(iptables); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if w.run(iptables, "-w", "-t", "nat", "-C", "OUTPUT", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_OUTPUT") != nil {
+		if err := w.run(iptables, "-w", "-t", "nat", "-I", "OUTPUT", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_OUTPUT"); err != nil {
+			errs = append(errs, err.Error())
 		}
-		if w.run(iptables, "-w", "-t", "nat", "-C", "POSTROUTING", "-j", hostPortsPostRoutingChain) != nil {
-			if err := w.run(iptables, "-w", "-t", "nat", "-I", "POSTROUTING", "-j", hostPortsPostRoutingChain); err != nil {
-				errs = append(errs, err.Error())
-			}
+	}
+	if w.run(iptables, "-w", "-t", "nat", "-C", "POSTROUTING", "-j", hostPortsPostRoutingChain) != nil {
+		if err := w.run(iptables, "-w", "-t", "nat", "-I", "POSTROUTING", "-j", hostPortsPostRoutingChain); err != nil {
+			errs = append(errs, err.Error())
 		}
 	}
 	if len(errs) > 0 {
@@ -178,13 +204,15 @@ func (w *watcher) ensureForwardJumpFirst(iptables string) error {
 	if err == nil && forwardJumpIsFirst(out) {
 		return nil
 	}
-
-	for {
-		if err := w.run(iptables, "-w", "-D", "FORWARD", "-j", "CATTLE_FORWARD"); err != nil {
-			break
-		}
+	// Install the new jump before removing stale copies. A failed insertion
+	// must never leave a working FORWARD hook disconnected.
+	if err := w.run(iptables, "-w", "-I", "FORWARD", "1", "-j", "CATTLE_FORWARD"); err != nil {
+		return err
 	}
-	return w.run(iptables, "-w", "-I", "FORWARD", "1", "-j", "CATTLE_FORWARD")
+	// An older jump may remain later in FORWARD. Leaving a single redundant
+	// jump is safer than deleting by position while Docker may rewrite rules.
+	// Subsequent repair sees the new first hook and does not add more copies.
+	return nil
 }
 
 func forwardJumpIsFirst(output []byte) bool {
@@ -198,8 +226,17 @@ func forwardJumpIsFirst(output []byte) bool {
 }
 
 func (w *watcher) onChangeNoError(version string) {
-	if err := w.onChange(version); err != nil {
+	for {
+		w.reconcileMu.Lock()
+		err := w.onChangeLocked(version, false)
+		w.reportLocked(err)
+		w.reconcileMu.Unlock()
+		if err == nil {
+			return
+		}
 		logrus.Errorf("Failed to apply host rules: %v", err)
+		// Retry even if the metadata version stays unchanged after failure.
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -208,22 +245,62 @@ func (w *watcher) repairBaseRulesNoError() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		w.baseRuleMu.Lock()
-		if err := w.insertBaseRules(); err != nil {
-			logrus.Debugf("Ignoring hostport base rule repair error: %v", err)
+		if err := w.repairOnce(); err != nil {
+			logrus.Errorf("Failed to repair hostport rules: %v", err)
 		}
-		w.baseRuleMu.Unlock()
 	}
 }
 
 func (w *watcher) onChange(version string) error {
+	w.reconcileMu.Lock()
+	defer w.reconcileMu.Unlock()
+	return w.onChangeLocked(version, false)
+}
+
+// repairOnce shares a lock with metadata callbacks so an older successful
+// reconcile cannot overwrite a later failure (or vice versa) in readiness.
+func (w *watcher) repairOnce() error {
+	w.reconcileMu.Lock()
+	defer w.reconcileMu.Unlock()
+
+	force := false
+	if w.backend.Mode == firewall.NFTables {
+		if err := w.checkNFTRules(); err != nil {
+			w.reportLocked(err)
+			force = true
+		}
+	} else {
+		w.baseRuleMu.Lock()
+		err := w.insertBaseRules()
+		w.baseRuleMu.Unlock()
+		if err != nil {
+			w.reportLocked(err)
+			force = true
+		}
+	}
+	err := w.onChangeLocked("periodic", force)
+	w.reportLocked(err)
+	return err
+}
+
+func (w *watcher) reportLocked(err error) {
+	if w.report != nil {
+		w.report(err)
+	}
+}
+
+func (w *watcher) onChangeLocked(version string, force bool) error {
 	logrus.Debug("Creating rule set")
 	newRules := ruleSet{
 		Ports:          map[string]PortRule{},
 		ForwardSubnets: map[string]string{},
 	}
 
-	host, err := identity.LocalHost(w.c, w.dc)
+	resolveHost := w.localHost
+	if resolveHost == nil {
+		resolveHost = identity.LocalHost
+	}
+	host, err := resolveHost(w.c, w.dc)
 	if err != nil {
 		return err
 	}
@@ -271,8 +348,7 @@ func (w *watcher) onChange(version string) error {
 		for _, port := range container.Ports {
 			rule, ok := parsePortRule(bridge, host.AgentIP, container.PrimaryIp, port)
 			if !ok {
-				logrus.Warnf("Ignoring invalid host port definition for container %s (%s): %q", container.Name, container.ExternalId, port)
-				continue
+				return fmt.Errorf("invalid host port definition for container %s (%s): %q", container.Name, container.ExternalId, port)
 			}
 
 			newRules.Ports[container.ExternalId+"/"+port] = rule
@@ -280,7 +356,7 @@ func (w *watcher) onChange(version string) error {
 	}
 
 	logrus.Debugf("New generated rules: %v", newRules)
-	if !reflect.DeepEqual(w.applied, newRules) {
+	if force || !reflect.DeepEqual(w.applied, newRules) {
 		logrus.Infof("Applying new port rules")
 		return w.apply(newRules)
 	} else if time.Now().Sub(w.lastApplied) > reapplyEvery {
@@ -294,9 +370,15 @@ func (w *watcher) onChange(version string) error {
 func (w *watcher) apply(rules ruleSet) error {
 	w.baseRuleMu.Lock()
 	defer w.baseRuleMu.Unlock()
-
-	w.removeBaseRules()
-	w.deleteOwnedChains()
+	if err := validateRuleSet(rules); err != nil {
+		return err
+	}
+	if w.backend.Mode == firewall.NFTables {
+		return w.applyNFT(rules)
+	}
+	if w.backend.Restore == "" {
+		return fmt.Errorf("hostports restore command is not configured")
+	}
 
 	buf := &bytes.Buffer{}
 	// NOTE: We don't use CATTLE_POSTROUTING, but for migration we just wipe it out
@@ -309,9 +391,14 @@ func (w *watcher) apply(rules ruleSet) error {
 	buf.WriteString("-F CATTLE_POSTROUTING\n")
 	buf.WriteString("-F CATTLE_OUTPUT\n")
 	buf.WriteString(fmt.Sprintf("-F %s\n", hostPortsPostRoutingChain))
-	for _, rule := range rules.Ports {
+	portKeys := make([]string, 0, len(rules.Ports))
+	for key := range rules.Ports {
+		portKeys = append(portKeys, key)
+	}
+	sort.Strings(portKeys)
+	for _, key := range portKeys {
 		buf.WriteString("\n")
-		buf.Write(rule.iptables())
+		buf.Write(rules.Ports[key].iptables())
 	}
 
 	buf.WriteString("\nCOMMIT\n\n*filter\n:CATTLE_FORWARD -\n")
@@ -329,15 +416,11 @@ func (w *watcher) apply(rules ruleSet) error {
 		fmt.Printf("Applying rules\n%s", buf)
 	}
 
-	for _, restore := range iptablesCommands("iptables-restore") {
-		cmd := exec.Command(restore, "-n")
-		cmd.Stderr = os.Stderr
-		cmd.Stdout = os.Stdout
-		cmd.Stdin = bytes.NewReader(buf.Bytes())
-		if err := cmd.Run(); err != nil {
-			logrus.Errorf("Failed to apply port rules with %s\n%s", restore, buf)
-			return err
-		}
+	if err := w.restore(w.backend.Restore, []string{"--test", "-n"}, buf.Bytes()); err != nil {
+		return fmt.Errorf("validate hostport rules: %w", err)
+	}
+	if err := w.restore(w.backend.Restore, []string{"-n"}, buf.Bytes()); err != nil {
+		return fmt.Errorf("apply hostport rules: %w", err)
 	}
 
 	if err := w.insertBaseRules(); err != nil {
@@ -349,68 +432,53 @@ func (w *watcher) apply(rules ruleSet) error {
 	return nil
 }
 
-func (w *watcher) removeBaseRules() {
-	commands := [][]string{
-		{"-w", "-t", "nat", "-D", "PREROUTING", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_PREROUTING"},
-		{"-w", "-t", "nat", "-D", "OUTPUT", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_OUTPUT"},
-		{"-w", "-t", "nat", "-D", "POSTROUTING", "-j", hostPortsPostRoutingChain},
-		{"-w", "-D", "FORWARD", "-j", "CATTLE_FORWARD"},
+func (w *watcher) restore(name string, args []string, data []byte) error {
+	if w.restoreRules != nil {
+		return w.restoreRules(name, args, data)
 	}
-	for _, iptables := range iptablesCommands("iptables") {
-		for _, args := range commands {
-			if err := w.run(append([]string{iptables}, args...)...); err != nil {
-				logrus.Debugf("Ignoring hostport base rule removal error: %v", err)
+	cmd := exec.Command(name, args...)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+	cmd.Stdin = bytes.NewReader(data)
+	return cmd.Run()
+}
+
+func validateRuleSet(rules ruleSet) error {
+	for _, rule := range rules.Ports {
+		if err := validatePortRule(rule); err != nil {
+			return err
+		}
+	}
+	for _, subnet := range rules.ForwardSubnets {
+		prefix, err := netip.ParsePrefix(subnet)
+		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
+			return fmt.Errorf("invalid IPv4 forward subnet %q", subnet)
+		}
+	}
+	return nil
+}
+
+func validatePortRule(rule PortRule) error {
+	if rule.Bridge != "" {
+		if len(rule.Bridge) > 15 {
+			return fmt.Errorf("invalid bridge name %q", rule.Bridge)
+		}
+		for _, char := range rule.Bridge {
+			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.') {
+				return fmt.Errorf("invalid bridge name %q", rule.Bridge)
 			}
 		}
 	}
-}
-
-func (w *watcher) deleteOwnedChains() {
-	chainsByTable := map[string][]string{
-		"nat":    {"CATTLE_PREROUTING", "CATTLE_POSTROUTING", "CATTLE_OUTPUT", hostPortsPostRoutingChain},
-		"filter": {"CATTLE_FORWARD"},
-	}
-	for table, chains := range chainsByTable {
-		for _, chain := range chains {
-			for _, iptables := range iptablesCommands("iptables") {
-				if err := w.run(iptables, "-w", "-t", table, "-F", chain); err != nil {
-					logrus.Debugf("Ignoring hostport chain flush error for %s/%s: %v", table, chain, err)
-				}
-				if err := w.run(iptables, "-w", "-t", table, "-X", chain); err != nil {
-					logrus.Debugf("Ignoring hostport chain delete error for %s/%s: %v", table, chain, err)
-				}
-			}
+	for _, address := range []string{rule.SourceIP, rule.TargetIP} {
+		ip, err := netip.ParseAddr(address)
+		if err != nil || !ip.Is4() {
+			return fmt.Errorf("invalid IPv4 hostport address %q", address)
 		}
 	}
-}
-
-func iptablesCommands(name string) []string {
-	commands := []string{name}
-	legacyName := strings.Replace(name, "iptables", "iptables-legacy", 1)
-	if legacyName == name {
-		return commands
+	if !validPort(rule.SourcePort) || !validPort(rule.TargetPort) || (rule.Protocol != "tcp" && rule.Protocol != "udp") {
+		return fmt.Errorf("invalid hostport protocol or port")
 	}
-	if _, err := exec.LookPath(legacyName); err != nil {
-		return commands
-	}
-	if sameCommand(name, legacyName) {
-		return commands
-	}
-	return append(commands, legacyName)
-}
-
-func sameCommand(a, b string) bool {
-	aPath, aErr := exec.LookPath(a)
-	bPath, bErr := exec.LookPath(b)
-	if aErr != nil || bErr != nil {
-		return false
-	}
-	aInfo, aErr := os.Stat(aPath)
-	bInfo, bErr := os.Stat(bPath)
-	if aErr != nil || bErr != nil {
-		return false
-	}
-	return os.SameFile(aInfo, bInfo)
+	return nil
 }
 
 func parsePortRule(bridge, hostIP, targetIP, portDef string) (PortRule, bool) {
@@ -431,14 +499,15 @@ func parsePortRule(bridge, hostIP, targetIP, portDef string) (PortRule, bool) {
 		return PortRule{}, false
 	}
 
-	return PortRule{
+	rule := PortRule{
 		Bridge:     bridge,
 		SourceIP:   sourceIP,
 		SourcePort: sourcePort,
 		TargetIP:   targetIP,
 		TargetPort: targetPort,
 		Protocol:   proto,
-	}, true
+	}
+	return rule, validatePortRule(rule) == nil
 }
 
 func validPort(port string) bool {

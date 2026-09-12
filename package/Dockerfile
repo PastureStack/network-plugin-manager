@@ -22,6 +22,7 @@ RUN set -eux; \
         "libcrypto3=${ALPINE_APK_LIBCRYPTO3_VERSION}" \
         "libssl3=${ALPINE_APK_LIBSSL3_VERSION}" \
         "net-tools=${ALPINE_APK_NET_TOOLS_VERSION}" \
+        "nftables=${ALPINE_APK_NFTABLES_VERSION}" \
         "procps-ng=${ALPINE_APK_PROCPS_NG_VERSION}" \
         "psmisc=${ALPINE_APK_PSMISC_VERSION}" \
         "tar=${ALPINE_APK_TAR_VERSION}" \
@@ -50,3 +51,5 @@ LABEL org.opencontainers.image.title="PastureStack Network Plugin Manager" \
 
 ENTRYPOINT ["/usr/bin/platform-entrypoint.sh", "/usr/bin/start.sh"]
 CMD ["network-plugin-manager"]
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=2m --retries=3 CMD test -f /tmp/pasturestack-network-ready
