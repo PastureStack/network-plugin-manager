@@ -123,7 +123,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.8.14 IMAGE_NAMESPACE=local/pasturestack make package
+VERSION_OVERRIDE=v0.8.15 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.
