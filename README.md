@@ -8,9 +8,9 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Runtime image
 
-The current released image is `v0.8.14`, with GHCR manifest digest
+The `v0.8.14` image was published with GHCR manifest digest
 `sha256:59b4bb31df28503337e9f3b8f08c18aa0dbe9749692c721fe8bdfc4cc921f263`.
-Its immutable tag resolves to signed source commit
+Its annotated tag resolves to signed source commit
 `98ffacd24436d42e33db721ab7026739d0edee41`. The release workflow passed
 tests, a reproducible build, Trivy source/binary/image scans, CycloneDX source
 and image SBOM checks, and asset/image provenance attestations. Image
@@ -23,6 +23,12 @@ iptables-nft, and iptables-legacy modes, rejected mismatched explicit choices
 without changing rules, and passed a Docker restart check and a legacy-mode
 host reboot check. This does not establish multi-host rollout or existing-stack
 upgrade safety.
+
+The `v0.8.15` source candidate moves same-subnet NAT exclusion into this
+manager's xtables rules, matching its native nftables ownership. The isolated
+VM applied, reapplied, inspected, and removed candidate host NAT and host-port
+rules under Docker's iptables-nft and iptables-legacy frontends. This is not
+yet evidence of a published `v0.8.15` image or a managed-service rollout.
 
 The current preflight inspects already loaded legacy tables using an
 independent iptables-legacy executable. Active old platform or Docker hooks
