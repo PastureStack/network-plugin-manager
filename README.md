@@ -8,9 +8,10 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Runtime image
 
-The current maintained release is `v0.8.11`. Its source tag, GitHub Release,
-GHCR image, SBOMs, checksums, provenance, and Catalog reference are published
-from the same pure numeric release identity.
+The `v0.8.11` source tag exists, but its GHCR image publication did not
+complete. Do not treat that tag as a deployable release. `v0.8.12` is the next
+intended release; its image, digest, SBOMs, provenance, and Catalog reference
+remain pending until publication and verification finish.
 
 The maintained image coordinate is:
 
@@ -44,6 +45,11 @@ their explicitly selected compatibility path. Do not switch a production host
 between backends without a backup and a maintenance-window verification of
 container egress, DNS, host ports, Docker restart, and host reboot.
 
+Native host NAT excludes destinations within each network's configured
+`bridgeSubnet` from its general masquerade rules, preserving overlay source
+addresses for same-subnet peer traffic. The IKE SNAT and legacy xtables rules
+are unchanged; cross-host behavior still needs deployment-level validation.
+
 The image healthcheck waits until both the host NAT and host-port watchers
 have successfully reconciled current metadata. A transient metadata delay
 retries without claiming readiness; a later failed rule update revokes it.
@@ -63,7 +69,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.8.11 IMAGE_NAMESPACE=local/pasturestack make package
+VERSION_OVERRIDE=v0.8.12 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.

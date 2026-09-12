@@ -193,9 +193,9 @@ func TestNATNFTScriptPreservesLegacyRuleOrderAndOwnsOnlyItsTable(t *testing.T) {
 		"type nat hook postrouting priority 99; policy accept;",
 		"flush chain ip pasturestack_hostnat postrouting",
 		"ip saddr 10.42.0.2 udp sport 500 oifname != \"pst0\" snat to 192.0.2.2:500",
-		"ip saddr 10.42.0.0/16 oifname != \"pst0\" meta l4proto tcp masquerade to :1024-65535",
-		"ip saddr 10.42.0.0/16 oifname != \"pst0\" meta l4proto udp masquerade to :1024-65535",
-		"ip saddr 10.42.0.0/16 oifname != \"pst0\" masquerade",
+		"ip saddr 10.42.0.0/16 ip daddr != 10.42.0.0/16 oifname != \"pst0\" meta l4proto tcp masquerade to :1024-65535",
+		"ip saddr 10.42.0.0/16 ip daddr != 10.42.0.0/16 oifname != \"pst0\" meta l4proto udp masquerade to :1024-65535",
+		"ip saddr 10.42.0.0/16 ip daddr != 10.42.0.0/16 oifname != \"pst0\" masquerade",
 		"oifname \"pst0\" fib saddr type local fib daddr type unicast masquerade",
 	} {
 		if !strings.Contains(script, want) {
@@ -204,6 +204,9 @@ func TestNATNFTScriptPreservesLegacyRuleOrderAndOwnsOnlyItsTable(t *testing.T) {
 	}
 	if strings.Index(script, "snat to") > strings.Index(script, "meta l4proto tcp") {
 		t.Fatal("IKE SNAT must precede general MASQ")
+	}
+	if got := strings.Count(script, "ip daddr != 10.42.0.0/16"); got != 3 {
+		t.Fatalf("all three general MASQ rules must exempt overlay destinations; got %d:\n%s", got, script)
 	}
 	for _, forbidden := range []string{"flush ruleset", "docker-bridges", "DOCKER-USER", "flush table"} {
 		if strings.Contains(script, forbidden) {
