@@ -45,6 +45,13 @@ under their own change control before enabling Docker native nftables; this
 component never auto-imports or silently deletes such rules. The retained
 metadata network schema and host-port rules are IPv4-only.
 
+The host NAT and host-port `CATTLE_*` chains are owned exclusively by this
+manager. Its general masquerade rules exclude the managed overlay subnet on
+native nftables, iptables-nft, and iptables-legacy. The IPsec host-XFRM router
+owns routes and XFRM state, not these chains. Upgrade this manager first,
+confirm its reconciliation and source-preserving egress, then upgrade the
+router; do not rely on a second plugin to patch a manager-owned chain.
+
 For the v0.8.13 upgrade case where Docker uses `iptables-nft` but a previous
 manager left `CATTLE_*` hooks in a loaded legacy NAT table, use the dedicated
 `iptables-legacy` frontend for inspection; the generic `iptables` alternative
