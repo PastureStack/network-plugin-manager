@@ -60,6 +60,13 @@ Production catalog templates reference a reviewed pure numeric version tag; the 
 
 The primary executable is `network-plugin-manager`. Its default metadata endpoint is `http://metadata/2016-07-29`; the catalog supplies the link-local endpoint used by each host deployment.
 
+The next release resolves the official per-host-subnet template's explicit
+`__host_label__:` subnet reference against the local host's Metadata labels
+before calculating host NAT and forwarding rules. Missing required labels
+fail closed, preserving existing applied hooks. Literal network subnets remain
+unchanged. This component does not resolve CNI stdin; the IPsec/VXLAN image
+owns that entrypoint, and neither component changes Docker's firewall backend.
+
 ## Host firewall backends
 
 The new `--firewall-backend` setting separates `auto`, `iptables-nft`,
