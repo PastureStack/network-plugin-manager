@@ -31,10 +31,11 @@ var (
 // Watch is used to monitor metadata for changes
 func Watch(c metadata.Client, dc *client.Client, backend firewall.Backend, report func(error)) error {
 	w := &watcher{
-		c:       c,
-		dc:      dc,
-		backend: backend,
-		report:  report,
+		c:                c,
+		dc:               dc,
+		backend:          backend,
+		report:           report,
+		setRouteLocalnet: setupBridgeRouteLocalnet,
 		applied: ruleSet{
 			Ports:          map[string]PortRule{},
 			ForwardSubnets: map[string]string{},
@@ -58,18 +59,19 @@ func Watch(c metadata.Client, dc *client.Client, backend firewall.Backend, repor
 }
 
 type watcher struct {
-	c            metadata.Client
-	dc           *client.Client
-	applied      ruleSet
-	lastApplied  time.Time
-	reconcileMu  sync.Mutex
-	baseRuleMu   sync.Mutex
-	backend      firewall.Backend
-	runCommand   func(args ...string) error
-	output       func(args ...string) ([]byte, error)
-	restoreRules func(name string, args []string, data []byte) error
-	report       func(error)
-	localHost    func(metadata.Client, *client.Client) (metadata.Host, error)
+	c                metadata.Client
+	dc               *client.Client
+	applied          ruleSet
+	lastApplied      time.Time
+	reconcileMu      sync.Mutex
+	baseRuleMu       sync.Mutex
+	backend          firewall.Backend
+	runCommand       func(args ...string) error
+	output           func(args ...string) ([]byte, error)
+	restoreRules     func(name string, args []string, data []byte) error
+	setRouteLocalnet func(bridge string) error
+	report           func(error)
+	localHost        func(metadata.Client, *client.Client) (metadata.Host, error)
 }
 
 type ruleSet struct {
@@ -81,12 +83,13 @@ type ruleSet struct {
 // PortRule is used to store the needed information for building a
 // iptables rule
 type PortRule struct {
-	Bridge     string
-	SourceIP   string
-	SourcePort string
-	TargetIP   string
-	TargetPort string
-	Protocol   string
+	Bridge         string
+	SourceIP       string
+	SourcePort     string
+	TargetIP       string
+	TargetPort     string
+	Protocol       string
+	MasqueradeDNAT bool
 }
 
 func (p PortRule) prefix() []byte {
@@ -143,6 +146,19 @@ func (p PortRule) iptables() []byte {
 
 	buf.WriteString(fmt.Sprintf("\n-A %s -s %v -d %v -p %v -m %v --dport %v -j MASQUERADE",
 		hostPortsPostRoutingChain, p.TargetIP, p.TargetIP, p.Protocol, p.Protocol, p.TargetPort))
+
+	// Locally originated traffic has no ingress bridge and must not reach a
+	// workload with a loopback or host source address. A flat L2 workload has
+	// an external default gateway, so every owned DNAT flow must instead return
+	// through this host's conntrack entry. Keep both rules scoped to this exact
+	// published target; unrelated forwarding and DNAT rules remain untouched.
+	if p.MasqueradeDNAT {
+		buf.WriteString(fmt.Sprintf("\n-A %s -m conntrack --ctstate DNAT -d %v -p %v -m %v --dport %v -j MASQUERADE",
+			hostPortsPostRoutingChain, p.TargetIP, p.Protocol, p.Protocol, p.TargetPort))
+	} else {
+		buf.WriteString(fmt.Sprintf("\n-A %s -m conntrack --ctstate DNAT -m addrtype --src-type LOCAL -d %v -p %v -m %v --dport %v -j MASQUERADE",
+			hostPortsPostRoutingChain, p.TargetIP, p.Protocol, p.Protocol, p.TargetPort))
+	}
 
 	return buf.Bytes()
 }
@@ -347,6 +363,7 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 	for _, container := range containers {
 		network := networks[container.NetworkUUID]
 		bridge := ""
+		masqueradeDNAT := false
 
 		if container.State != "running" && container.State != "starting" {
 			continue
@@ -358,16 +375,7 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 			continue
 		}
 
-		conf, _ := network.Metadata["cniConfig"].(map[string]interface{})
-		for _, file := range conf {
-			props, _ := file.(map[string]interface{})
-			cniType, _ := props["type"].(string)
-			checkBridge, _ := props["bridge"].(string)
-
-			if isBridgeCNIType(cniType) && checkBridge != "" {
-				bridge = checkBridge
-			}
-		}
+		bridge, masqueradeDNAT = hostportBridgeForNetwork(network)
 
 		for _, port := range container.Ports {
 			rule, ok := parsePortRule(bridge, host.AgentIP, container.PrimaryIp, port)
@@ -375,11 +383,15 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 				return fmt.Errorf("invalid host port definition for container %s (%s): %q", container.Name, container.ExternalId, port)
 			}
 
+			rule.MasqueradeDNAT = masqueradeDNAT
 			newRules.Ports[container.ExternalId+"/"+port] = rule
 		}
 	}
 
 	logrus.Debugf("New generated rules: %v", newRules)
+	if err := w.preparePortBridges(newRules); err != nil {
+		return err
+	}
 	if force || !reflect.DeepEqual(w.applied, newRules) {
 		logrus.Infof("Applying new port rules")
 		return w.apply(newRules)
@@ -388,6 +400,34 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 	}
 
 	logrus.Debugf("No change in applied rules")
+	return nil
+}
+
+func (w *watcher) preparePortBridges(rules ruleSet) error {
+	if w.setRouteLocalnet == nil {
+		return nil
+	}
+	bridges := map[string]bool{}
+	for _, rule := range rules.Ports {
+		address, err := netip.ParseAddr(rule.SourceIP)
+		if err != nil {
+			return fmt.Errorf("invalid hostport source address %q", rule.SourceIP)
+		}
+		if rule.Bridge == "" || (rule.SourceIP != "0.0.0.0" && !address.IsLoopback()) {
+			continue
+		}
+		bridges[rule.Bridge] = true
+	}
+	names := make([]string, 0, len(bridges))
+	for bridge := range bridges {
+		names = append(names, bridge)
+	}
+	sort.Strings(names)
+	for _, bridge := range names {
+		if err := w.setRouteLocalnet(bridge); err != nil {
+			return fmt.Errorf("enable loopback host ports on bridge %s: %w", bridge, err)
+		}
+	}
 	return nil
 }
 
@@ -428,7 +468,8 @@ func (w *watcher) apply(rules ruleSet) error {
 	buf.WriteString("\nCOMMIT\n\n*filter\n:CATTLE_FORWARD -\n")
 	buf.WriteString("-F CATTLE_FORWARD\n")
 	for _, subnet := range sortedForwardSubnets(rules.ForwardSubnets) {
-		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -s %s -d %s -j ACCEPT\n", subnet, subnet))
+		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -s %s -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT\n", subnet))
+		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -d %s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n", subnet))
 	}
 	for _, pair := range sortedForwardPeers(rules) {
 		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -s %s -d %s -j ACCEPT\n", pair.Peer, pair.Local))
@@ -580,6 +621,21 @@ func forwardSubnetForNetwork(network metadata.Network) string {
 	return ""
 }
 
+func hostportBridgeForNetwork(network metadata.Network) (string, bool) {
+	conf, _ := network.Metadata["cniConfig"].(map[string]interface{})
+	for _, file := range conf {
+		props, _ := file.(map[string]interface{})
+		cniType, _ := props["type"].(string)
+		bridge, _ := props["bridge"].(string)
+		if !isBridgeCNIType(cniType) || bridge == "" {
+			continue
+		}
+		externalGateway, _ := props["skipBridgeConfigureIP"].(bool)
+		return bridge, externalGateway
+	}
+	return "", false
+}
+
 func isBridgeCNIType(cniType string) bool {
 	return cniType == "pasture-bridge" || cniType == "rancher-bridge"
 }
@@ -636,8 +692,22 @@ func setupKernelParameters() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		logrus.Errorf("error setting up kernel parameters")
-		return err
+		return fmt.Errorf("set net.bridge.bridge-nf-call-iptables: %w", err)
 	}
 	return nil
+}
+
+func setupBridgeRouteLocalnet(bridge string) error {
+	key := "net.ipv4.conf." + bridge + ".route_localnet"
+	out, err := exec.Command("sysctl", "-n", key).Output()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(out)) == "1" {
+		return nil
+	}
+	cmd := exec.Command("sysctl", "-w", key+"=1")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }

@@ -37,7 +37,7 @@ themselves establish a managed-service or multi-host rollout.
 
 The `v0.8.16` image was published with GHCR manifest digest
 `sha256:a042c582689561b43349fa83ed92269e849038be3b7a2342e8a9ef0149460f92`.
-The current published image is `v0.8.17`, with GHCR manifest digest
+The `v0.8.17` image was published with GHCR manifest digest
 `sha256:f13654b27b71f3fbddbcf33272c10b342d513dd402a255bdda1f341cfbe908f8`.
 Its signed tag resolves to verified source commit
 `e29dd5cefa373140d76e3a21da9bd95a3bec97e3`; the release workflow passed
@@ -61,6 +61,25 @@ health, bidirectional TCP 42, Metadata HTTP 200, public HTTPS, and published
 host ports all passed. The manager follows the Docker-selected backend; it
 does not change the host's firewall preference. This bounded test
 does not establish every existing iptables or IPsec deployment's migration safety.
+
+The `v0.8.18` image was published with GHCR manifest digest
+`sha256:1f5d44de03648a771ec9e7bc448e456ef6b21a5fcd4cc51f59f99df96a804822`.
+It restores target-scoped authorization for every packet in an owned DNAT
+flow, including later UDP datagrams, without accepting unrelated Docker
+traffic.
+
+The current release is `v0.8.19`. Managed bridge subnets can initiate
+outbound traffic and receive only established or related replies; this keeps
+Metadata and DNS reachable behind current Docker bridge filters without
+opening unsolicited inbound forwarding or changing the host's global policy.
+Host ports on a flat L2 network receive target-scoped DNAT masquerading so
+replies return through the publishing host even when workloads use an
+external gateway. Loopback host-port access enables `route_localnet` only on
+the exact managed bridge that needs it. Overlay host ports retain client
+source addresses except for locally originated access. Obtain the immutable
+image identity from the release's checksum-covered
+[`published.txt`](https://github.com/PastureStack/network-plugin-manager/releases/latest/download/published.txt)
+rather than copying an older release digest.
 
 The current preflight inspects already loaded legacy tables using an
 independent iptables-legacy executable. Active old platform or Docker hooks
@@ -157,7 +176,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.8.17 IMAGE_NAMESPACE=local/pasturestack make package
+VERSION_OVERRIDE=v0.8.19 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.

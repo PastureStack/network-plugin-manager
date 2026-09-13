@@ -32,6 +32,48 @@ func TestForwardSubnetSupportsPastureBridge(t *testing.T) {
 	}
 }
 
+func TestFlatBridgeUsesOwnedDNATMasquerade(t *testing.T) {
+	flat := metadata.Network{Metadata: map[string]interface{}{
+		"cniConfig": map[string]interface{}{
+			"10-flat.conf": map[string]interface{}{
+				"type": "pasture-bridge", "bridge": "flatbr0", "skipBridgeConfigureIP": true,
+			},
+		},
+	}}
+	if bridge, masquerade := hostportBridgeForNetwork(flat); bridge != "flatbr0" || !masquerade {
+		t.Fatalf("flat bridge settings = %q,%v", bridge, masquerade)
+	}
+	overlay := metadata.Network{Metadata: map[string]interface{}{
+		"cniConfig": map[string]interface{}{
+			"10-overlay.conf": map[string]interface{}{
+				"type": "pasture-bridge", "bridge": "cattle0", "skipBridgeConfigureIP": false,
+			},
+		},
+	}}
+	if bridge, masquerade := hostportBridgeForNetwork(overlay); bridge != "cattle0" || masquerade {
+		t.Fatalf("overlay bridge settings = %q,%v", bridge, masquerade)
+	}
+}
+
+func TestPreparePortBridgesEnablesLoopbackOnlyWhereNeeded(t *testing.T) {
+	var bridges []string
+	w := &watcher{setRouteLocalnet: func(bridge string) error {
+		bridges = append(bridges, bridge)
+		return nil
+	}}
+	rules := ruleSet{Ports: map[string]PortRule{
+		"all":      {Bridge: "flatbr0", SourceIP: "0.0.0.0"},
+		"loopback": {Bridge: "cattle0", SourceIP: "127.0.0.1"},
+		"bound":    {Bridge: "private0", SourceIP: "192.0.2.10"},
+	}, ForwardSubnets: map[string]string{}}
+	if err := w.preparePortBridges(rules); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"cattle0", "flatbr0"}; !reflect.DeepEqual(bridges, want) {
+		t.Fatalf("prepared bridges = %v, want %v", bridges, want)
+	}
+}
+
 func TestPerHostPeerMarksOnlyManagedSubnets(t *testing.T) {
 	rules := ruleSet{
 		Ports:          map[string]PortRule{},
@@ -233,6 +275,66 @@ func TestPublishedUDPDNATIsAcceptedForWholeFlow(t *testing.T) {
 	}
 }
 
+func TestManagedSubnetAllowsOutboundAndEstablishedReturnOnly(t *testing.T) {
+	rules := testRuleSet()
+	var iptablesRules string
+	w := &watcher{
+		backend: firewall.Backend{Mode: firewall.IptablesNFT, Command: "iptables-nft", Restore: "iptables-nft-restore"},
+		restoreRules: func(_ string, _ []string, data []byte) error {
+			iptablesRules = string(data)
+			return nil
+		},
+		runCommand: func(...string) error { return nil },
+		output:     func(...string) ([]byte, error) { return []byte("-A FORWARD -j CATTLE_FORWARD\n"), nil },
+	}
+	if err := w.apply(rules); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"-A CATTLE_FORWARD -s 10.42.0.0/16 -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT",
+		"-A CATTLE_FORWARD -d 10.42.0.0/16 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+	} {
+		if !strings.Contains(iptablesRules, want) {
+			t.Fatalf("iptables rules missing %q", want)
+		}
+	}
+	if strings.Contains(iptablesRules, "-d 10.42.0.0/16 -m conntrack --ctstate NEW") {
+		t.Fatal("unsolicited inbound traffic was allowed")
+	}
+	nftRules := string(nftHostportBatch(rules, false))
+	for _, want := range []string{
+		"ip saddr 10.42.0.0/16 ct state new,established,related meta mark set meta mark | 0x1068 accept",
+		"ip daddr 10.42.0.0/16 ct state established,related meta mark set meta mark | 0x1068 accept",
+	} {
+		if !strings.Contains(nftRules, want) {
+			t.Fatalf("nft rules missing %q", want)
+		}
+	}
+}
+
+func TestHostportMasqueradeIsScopedToOwnedDNATTarget(t *testing.T) {
+	flat := PortRule{Bridge: "flatbr0", SourceIP: "0.0.0.0", SourcePort: "18045", TargetIP: "192.168.204.18", TargetPort: "42", Protocol: "tcp", MasqueradeDNAT: true}
+	flatRules := string(flat.iptables())
+	if !strings.Contains(flatRules, "-m conntrack --ctstate DNAT -d 192.168.204.18 -p tcp -m tcp --dport 42 -j MASQUERADE") {
+		t.Fatal("flat iptables rules lack target-scoped DNAT masquerade")
+	}
+	nftFlat := string(nftHostportBatch(ruleSet{Ports: map[string]PortRule{"flat": flat}, ForwardSubnets: map[string]string{}}, false))
+	if !strings.Contains(nftFlat, "ct status dnat ip daddr 192.168.204.18 tcp dport 42 masquerade") {
+		t.Fatal("flat nft rules lack target-scoped DNAT masquerade")
+	}
+	overlay := flat
+	overlay.Bridge = "cattle0"
+	overlay.MasqueradeDNAT = false
+	overlayRules := string(overlay.iptables())
+	if !strings.Contains(overlayRules, "-m conntrack --ctstate DNAT -m addrtype --src-type LOCAL -d 192.168.204.18") {
+		t.Fatal("overlay iptables rules do not limit extra masquerade to local traffic")
+	}
+	nftOverlay := string(nftHostportBatch(ruleSet{Ports: map[string]PortRule{"overlay": overlay}, ForwardSubnets: map[string]string{}}, false))
+	if !strings.Contains(nftOverlay, "fib saddr type local ct status dnat ip daddr 192.168.204.18 tcp dport 42 masquerade") {
+		t.Fatal("overlay nft rules do not limit extra masquerade to local traffic")
+	}
+}
+
 func TestApplyIptablesValidatesBeforeUpdatingOrRepairingHooks(t *testing.T) {
 	var calls []string
 	rules := testRuleSet()
@@ -358,7 +460,8 @@ func TestNativeNFTUsesOwnedTableAndSingleCheckedBatch(t *testing.T) {
 		"type filter hook forward priority -1",
 		"meta mark & 0x1068 == 0x1068 accept",
 		"ct status dnat ip daddr 10.42.1.2 tcp dport 8080 meta mark set meta mark | 0x1068 accept",
-		"ip saddr 10.42.0.0/16 ip daddr 10.42.0.0/16 meta mark set meta mark | 0x1068 accept",
+		"ip saddr 10.42.0.0/16 ct state new,established,related meta mark set meta mark | 0x1068 accept",
+		"ip daddr 10.42.0.0/16 ct state established,related meta mark set meta mark | 0x1068 accept",
 	} {
 		if !strings.Contains(string(checks), expected) {
 			t.Fatalf("batch missing %q", expected)

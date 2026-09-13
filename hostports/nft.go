@@ -49,8 +49,9 @@ func (w *watcher) checkNFTRules() error {
 		}
 		ruleCount["output"]++
 		ruleCount["postrouting"]++
+		ruleCount["postrouting"]++
 	}
-	ruleCount["forward"] = 2 + len(sortedForwardSubnets(w.applied.ForwardSubnets)) + len(sortedForwardPeers(w.applied)) + len(w.applied.Ports)
+	ruleCount["forward"] = 2 + 2*len(sortedForwardSubnets(w.applied.ForwardSubnets)) + len(sortedForwardPeers(w.applied)) + len(w.applied.Ports)
 	seen := map[string]bool{}
 	actualRules := map[string]int{}
 	for _, item := range listing.NFTables {
@@ -157,10 +158,16 @@ func nftHostportBatch(rules ruleSet, existing bool) []byte {
 			fmt.Fprintf(buf, "  iifname %q oifname %q ip daddr %s %s dport %s masquerade\n", p.Bridge, p.Bridge, p.TargetIP, p.Protocol, p.TargetPort)
 		}
 		fmt.Fprintf(buf, "  ip saddr %s ip daddr %s %s dport %s masquerade\n", p.TargetIP, p.TargetIP, p.Protocol, p.TargetPort)
+		if p.MasqueradeDNAT {
+			fmt.Fprintf(buf, "  ct status dnat ip daddr %s %s dport %s masquerade\n", p.TargetIP, p.Protocol, p.TargetPort)
+		} else {
+			fmt.Fprintf(buf, "  fib saddr type local ct status dnat ip daddr %s %s dport %s masquerade\n", p.TargetIP, p.Protocol, p.TargetPort)
+		}
 	}
 	buf.WriteString(" }\n chain forward {\n  type filter hook forward priority -1; policy accept;\n")
 	for _, subnet := range sortedForwardSubnets(rules.ForwardSubnets) {
-		fmt.Fprintf(buf, "  ip saddr %s ip daddr %s meta mark set meta mark | 0x1068 accept\n", subnet, subnet)
+		fmt.Fprintf(buf, "  ip saddr %s ct state new,established,related meta mark set meta mark | 0x1068 accept\n", subnet)
+		fmt.Fprintf(buf, "  ip daddr %s ct state established,related meta mark set meta mark | 0x1068 accept\n", subnet)
 	}
 	for _, pair := range sortedForwardPeers(rules) {
 		fmt.Fprintf(buf, "  ip saddr %s ip daddr %s meta mark set meta mark | 0x1068 accept\n", pair.Peer, pair.Local)
