@@ -433,6 +433,15 @@ func (w *watcher) apply(rules ruleSet) error {
 	for _, pair := range sortedForwardPeers(rules) {
 		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -s %s -d %s -j ACCEPT\n", pair.Peer, pair.Local))
 	}
+	// A nat-table MARK is evaluated only for the first packet of a conntracked
+	// flow. In particular, subsequent VXLAN UDP datagrams can reach Docker's
+	// unpublished-port DROP without the mark. Match only our published DNAT
+	// targets here, so every packet in that flow is admitted without widening
+	// access to unrelated Docker or host firewall rules.
+	for _, key := range portKeys {
+		p := rules.Ports[key]
+		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -m conntrack --ctstate DNAT -d %s -p %s -m %s --dport %s -j ACCEPT\n", p.TargetIP, p.Protocol, p.Protocol, p.TargetPort))
+	}
 	buf.WriteString("-A CATTLE_FORWARD -m mark --mark 0x1068 -j ACCEPT\n")
 	// For k8s
 	buf.WriteString("-A CATTLE_FORWARD -m mark --mark 0x4000 -j ACCEPT\n")
