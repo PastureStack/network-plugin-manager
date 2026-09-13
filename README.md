@@ -128,6 +128,12 @@ VERSION_OVERRIDE=v0.8.15 IMAGE_NAMESPACE=local/pasturestack make package
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.
 
+The opt-in, root-only host NAT and host-port VM tests reuse the runtime's
+read-only Docker firewall detection before changing any rules. This also
+recognizes older Docker APIs without `FirewallBackend.Driver` and avoids
+probing unloaded legacy tables on nft-only hosts. Run them only on a
+disposable VM with a rollback point; ordinary CI does not execute them.
+
 ## Compatibility and security
 
 Some legacy API paths, Docker labels, filesystem paths, and dependency namespaces are protocol or data contracts. They are isolated and documented in [COMPATIBILITY.md](COMPATIBILITY.md), rather than exposed as PastureStack branding.

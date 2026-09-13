@@ -1,7 +1,6 @@
 package hostports
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -47,22 +46,12 @@ func testIptablesOnDisposableVM(t *testing.T, mode firewall.Mode) {
 		t.Fatal(err)
 	}
 	defer dc.Close()
-	info, err := dc.Info(context.Background(), client.InfoOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Info.FirewallBackend == nil || info.Info.FirewallBackend.Driver != "iptables" {
-		t.Fatalf("refusing xtables test outside Docker iptables mode: %#v", info.Info.FirewallBackend)
+	detected, err := firewall.Detect(dc, mode)
+	if err != nil || detected.Mode != mode || detected.Command != command || detected.Restore != restore {
+		t.Fatalf("refusing mismatched Docker firewall backend %s: detected=%+v err=%v", mode, detected, err)
 	}
 	if out, err := exec.Command(command, "-t", "nat", "-S", "DOCKER").CombinedOutput(); err != nil {
 		t.Fatalf("requires Docker-owned NAT chain in %s: %v: %s", mode, err, out)
-	}
-	other := "iptables-nft"
-	if mode == firewall.IptablesNFT {
-		other = "iptables-legacy"
-	}
-	if out, err := exec.Command(other, "-t", "nat", "-S", "DOCKER").CombinedOutput(); err == nil {
-		t.Fatalf("refusing dual Docker backends; %s also owns NAT: %s", other, out)
 	}
 	for _, table := range []string{"nat", "filter"} {
 		out, err := xtVMCommand(command, "-t", table, "-S")

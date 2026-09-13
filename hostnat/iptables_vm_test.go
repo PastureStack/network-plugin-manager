@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/PastureStack/network-plugin-manager/internal/firewall"
+	"github.com/moby/moby/client"
 )
 
 // Opt-in root test for an isolated VM. It refuses to run when the production
@@ -34,18 +35,17 @@ func testIptablesBatchOnVM(t *testing.T, mode firewall.Mode) {
 			t.Fatal(err)
 		}
 	}
-	if out, err := exec.Command("docker", "info", "--format", "{{.FirewallBackend.Driver}}").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "iptables" {
-		t.Fatalf("requires Docker iptables backend: %v: %s", err, out)
+	dc, err := client.New(client.FromEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dc.Close()
+	detected, err := firewall.Detect(dc, mode)
+	if err != nil || detected.Mode != mode || detected.Command != command || detected.Restore != restore {
+		t.Fatalf("refusing mismatched Docker firewall backend %s: detected=%+v err=%v", mode, detected, err)
 	}
 	if out, err := exec.Command(command, "-t", "nat", "-S", "DOCKER").CombinedOutput(); err != nil {
 		t.Fatalf("requires Docker-owned NAT chain in %s: %v: %s", mode, err, out)
-	}
-	other := "iptables-nft"
-	if mode == firewall.IptablesNFT {
-		other = "iptables-legacy"
-	}
-	if out, err := exec.Command(other, "-t", "nat", "-S", "DOCKER").CombinedOutput(); err == nil {
-		t.Fatalf("refusing dual Docker backends; %s also owns NAT: %s", other, out)
 	}
 	iptables := func(args ...string) ([]byte, error) {
 		return exec.Command(command, args...).CombinedOutput()
