@@ -52,6 +52,16 @@ owns routes and XFRM state, not these chains. Upgrade this manager first,
 confirm its reconciliation and source-preserving egress, then upgrade the
 router; do not rely on a second plugin to patch a manager-owned chain.
 
+For the optional per-host-subnet driver, the manager reads only active hosts'
+canonical, non-overlapping subnet labels in the same Metadata environment.
+It excludes those peer destinations from its own masquerade chain and allows
+only peer-subnet-to-local-subnet forwarding (or the equivalent native nft mark
+that Docker's bridge filter recognizes). Inactive registrations are ignored;
+an active host lacking a valid label blocks reconciliation instead of opening
+a broad rule. This is an unencrypted routed network; operators must trust and
+protect the host transport. The CNI driver owns subnet assignment, while this
+manager exclusively owns the firewall exception in each selected backend.
+
 For the v0.8.13 upgrade case where Docker uses `iptables-nft` but a previous
 manager left `CATTLE_*` hooks in a loaded legacy NAT table, use the dedicated
 `iptables-legacy` frontend for inspection; the generic `iptables` alternative

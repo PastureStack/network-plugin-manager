@@ -78,6 +78,7 @@ type ruleSet struct {
 type MASQRule struct {
 	Subnet string
 	Bridge string
+	Peers  []string
 }
 
 type IKEPortSNATRule struct {
@@ -89,6 +90,9 @@ type IKEPortSNATRule struct {
 
 func (p MASQRule) iptables() []byte {
 	buf := &bytes.Buffer{}
+	for _, peer := range p.Peers {
+		buf.WriteString(fmt.Sprintf("-A %s -s %s -d %s -j RETURN\n", natChain, p.Subnet, peer))
+	}
 	// Keep same-subnet overlay traffic's original source IP. This must live in
 	// the manager-owned NAT rule, not in a second plugin's chain mutation.
 	buf.WriteString(fmt.Sprintf("-A %s -p tcp -s %s ! -d %s ! -o %s -j MASQUERADE --to-ports 1024-65535\n", natChain, p.Subnet, p.Subnet, p.Bridge))
@@ -221,16 +225,32 @@ func (w *watcher) onChange(version string) error {
 		return err
 	}
 	networksByUUID := map[string]metadata.Network{}
+	var peerHosts []metadata.Host
+	peersLoaded := false
 
 	for _, network := range networks {
 		networksByUUID[network.UUID] = network
 		rule := w.networkToRule(network)
 		if rule != nil {
+			reference := rule.Subnet
 			resolved, err := hostlabel.Resolve(rule.Subnet, host.Labels)
 			if err != nil {
 				return fmt.Errorf("network %s hostnat subnet: %w", network.UUID, err)
 			}
 			rule.Subnet = resolved
+			if hostlabel.IsReference(reference) {
+				if !peersLoaded {
+					peerHosts, err = w.c.GetHosts()
+					if err != nil {
+						return err
+					}
+					peersLoaded = true
+				}
+				rule.Peers, err = hostlabel.PeerSubnets(reference, host.UUID, resolved, peerHosts)
+				if err != nil {
+					return fmt.Errorf("network %s hostnat peers: %w", network.UUID, err)
+				}
+			}
 			newRules.MASQ[network.UUID] = *rule
 		}
 	}
@@ -448,6 +468,12 @@ func validateNATRules(rules ruleSet) error {
 		if !interfaceName.MatchString(rule.Bridge) {
 			return fmt.Errorf("hostnat MASQ %q has invalid bridge name %q", key, rule.Bridge)
 		}
+		for _, peer := range rule.Peers {
+			prefix, err := netip.ParsePrefix(peer)
+			if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
+				return fmt.Errorf("hostnat MASQ %q has invalid peer subnet %q", key, peer)
+			}
+		}
 	}
 	for key, rule := range rules.IKE {
 		for name, value := range map[string]string{"source": rule.SourceIP, "host": rule.HostIP} {
@@ -504,6 +530,9 @@ func nftNATScriptForTable(rules ruleSet, table string) []byte {
 	sort.Strings(masqKeys)
 	for _, key := range masqKeys {
 		rule := rules.MASQ[key]
+		for _, peer := range rule.Peers {
+			fmt.Fprintf(buf, "add rule ip %s postrouting ip saddr %s ip daddr %s return\n", table, rule.Subnet, peer)
+		}
 		for _, protocol := range []string{"tcp", "udp"} {
 			fmt.Fprintf(buf, "add rule ip %s postrouting ip saddr %s ip daddr != %s oifname != \"%s\" meta l4proto %s masquerade to :1024-65535\n", table, rule.Subnet, rule.Subnet, rule.Bridge, protocol)
 		}
@@ -612,6 +641,9 @@ func (w *watcher) checkNativeState() error {
 		return errNativeHookMismatch
 	}
 	wantRules := len(w.applied.IKE) + 4*len(w.applied.MASQ)
+	for _, rule := range w.applied.MASQ {
+		wantRules += len(rule.Peers)
+	}
 	if ruleCount != wantRules {
 		return fmt.Errorf("owned postrouting rule count is %d, want %d", ruleCount, wantRules)
 	}

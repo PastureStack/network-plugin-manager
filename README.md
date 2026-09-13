@@ -24,7 +24,7 @@ without changing rules, and passed a Docker restart check and a legacy-mode
 host reboot check. This does not establish multi-host rollout or existing-stack
 upgrade safety.
 
-The current published image is `v0.8.15`, with GHCR manifest digest
+The `v0.8.15` image was published with GHCR manifest digest
 `sha256:622cfb38a58f204d23152205e6d850d204d1cb9d3c50392a935afee49d780e3e`.
 Its annotated tag resolves to signed source commit
 `26eee48df2e3bac96fc97fcd596a16deccc9f4ad`. The release workflow passed
@@ -34,6 +34,25 @@ nftables ownership. The isolated VM applied, reapplied, inspected, and removed
 candidate host NAT and host-port rules under Docker's iptables-nft and
 iptables-legacy frontends. Image publication and isolated-VM tests do not by
 themselves establish a managed-service or multi-host rollout.
+
+The `v0.8.16` image was published with GHCR manifest digest
+`sha256:a042c582689561b43349fa83ed92269e849038be3b7a2342e8a9ef0149460f92`.
+The `v0.8.17` source adds bounded cross-host exceptions for the per-host-subnet
+network: only active hosts with distinct, valid subnet labels are peers. Their
+traffic retains its container source IP and is marked before Docker's native
+nft bridge filter. An active host with a missing or overlapping label fails
+closed; an inactive registration does not block live peers. Network Plugin
+Manager owns these NAT and forwarding rules, not the CNI driver or an ad-hoc
+host firewall script.
+
+On two isolated Ubuntu 26.04.1 / Docker 29.8 QA hosts, a source-equivalent
+`v0.8.17` candidate passed bidirectional container ping and TCP 42, service
+DNS, public HTTPS egress, and host port 32792 after Docker restarts and host
+reboots. The second host was also explicitly switched to `iptables-nft`, then
+`iptables-legacy`, with the same cross-host checks passing in each mode. It was
+restored to native nft afterward. The manager follows the Docker-selected
+backend; it does not change the host's firewall preference. This bounded test
+does not establish every existing iptables or IPsec deployment's migration safety.
 
 The current preflight inspects already loaded legacy tables using an
 independent iptables-legacy executable. Active old platform or Docker hooks
@@ -60,9 +79,9 @@ Production catalog templates reference a reviewed pure numeric version tag; the 
 
 The primary executable is `network-plugin-manager`. Its default metadata endpoint is `http://metadata/2016-07-29`; the catalog supplies the link-local endpoint used by each host deployment.
 
-The next release resolves the official per-host-subnet template's explicit
-`__host_label__:` subnet reference against the local host's Metadata labels
-before calculating host NAT and forwarding rules. Missing required labels
+Since `v0.8.16`, the official per-host-subnet template's explicit
+`__host_label__:` subnet reference is resolved against the local host's Metadata
+labels before calculating host NAT and forwarding rules. Missing required labels
 fail closed, preserving existing applied hooks. Literal network subnets remain
 unchanged. This component does not resolve CNI stdin; the IPsec/VXLAN image
 owns that entrypoint, and neither component changes Docker's firewall backend.

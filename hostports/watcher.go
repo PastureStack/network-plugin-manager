@@ -75,6 +75,7 @@ type watcher struct {
 type ruleSet struct {
 	Ports          map[string]PortRule
 	ForwardSubnets map[string]string
+	ForwardPeers   map[string][]string
 }
 
 // PortRule is used to store the needed information for building a
@@ -310,6 +311,8 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 	if err != nil {
 		return err
 	}
+	var peerHosts []metadata.Host
+	peersLoaded := false
 	for uuid, network := range networks {
 		if subnet := forwardSubnetForNetwork(network); subnet != "" {
 			resolved, err := hostlabel.Resolve(subnet, host.Labels)
@@ -317,6 +320,22 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 				return fmt.Errorf("network %s hostport subnet: %w", uuid, err)
 			}
 			newRules.ForwardSubnets[uuid] = resolved
+			if hostlabel.IsReference(subnet) {
+				if newRules.ForwardPeers == nil {
+					newRules.ForwardPeers = map[string][]string{}
+				}
+				if !peersLoaded {
+					peerHosts, err = w.c.GetHosts()
+					if err != nil {
+						return err
+					}
+					peersLoaded = true
+				}
+				newRules.ForwardPeers[uuid], err = hostlabel.PeerSubnets(subnet, host.UUID, resolved, peerHosts)
+				if err != nil {
+					return fmt.Errorf("network %s hostport peers: %w", uuid, err)
+				}
+			}
 		}
 	}
 
@@ -411,6 +430,9 @@ func (w *watcher) apply(rules ruleSet) error {
 	for _, subnet := range sortedForwardSubnets(rules.ForwardSubnets) {
 		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -s %s -d %s -j ACCEPT\n", subnet, subnet))
 	}
+	for _, pair := range sortedForwardPeers(rules) {
+		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -s %s -d %s -j ACCEPT\n", pair.Peer, pair.Local))
+	}
 	buf.WriteString("-A CATTLE_FORWARD -m mark --mark 0x1068 -j ACCEPT\n")
 	// For k8s
 	buf.WriteString("-A CATTLE_FORWARD -m mark --mark 0x4000 -j ACCEPT\n")
@@ -458,6 +480,17 @@ func validateRuleSet(rules ruleSet) error {
 		prefix, err := netip.ParsePrefix(subnet)
 		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
 			return fmt.Errorf("invalid IPv4 forward subnet %q", subnet)
+		}
+	}
+	for uuid, peers := range rules.ForwardPeers {
+		if rules.ForwardSubnets[uuid] == "" {
+			return fmt.Errorf("forward peer network %s has no local subnet", uuid)
+		}
+		for _, peer := range peers {
+			prefix, err := netip.ParsePrefix(peer)
+			if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
+				return fmt.Errorf("invalid IPv4 forward peer subnet %q", peer)
+			}
 		}
 	}
 	return nil
@@ -554,6 +587,25 @@ func sortedForwardSubnets(subnetsByNetwork map[string]string) []string {
 	}
 	sort.Strings(subnets)
 	return subnets
+}
+
+type forwardPair struct{ Peer, Local string }
+
+func sortedForwardPeers(rules ruleSet) []forwardPair {
+	keys := make([]string, 0, len(rules.ForwardPeers))
+	for key := range rules.ForwardPeers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	pairs := []forwardPair{}
+	for _, key := range keys {
+		peers := append([]string(nil), rules.ForwardPeers[key]...)
+		sort.Strings(peers)
+		for _, peer := range peers {
+			pairs = append(pairs, forwardPair{Peer: peer, Local: rules.ForwardSubnets[key]})
+		}
+	}
+	return pairs
 }
 
 func networksByUUID(c metadata.Client) (map[string]metadata.Network, error) {

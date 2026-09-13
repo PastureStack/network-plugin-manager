@@ -30,6 +30,18 @@ func emptyHostportWatcher() *watcher {
 	}
 }
 
+func TestNoPerHostNetworkDoesNotReapplyUnchangedFirewall(t *testing.T) {
+	w := emptyHostportWatcher()
+	w.backend = firewall.Backend{Mode: firewall.NFTables, Command: "nft"}
+	w.restoreRules = func(_ string, _ []string, _ []byte) error {
+		t.Fatal("unchanged non-per-host metadata attempted a firewall mutation")
+		return nil
+	}
+	if err := w.onChange("metadata"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 const intactEmptyNFT = `{"nftables":[
  {"table":{"family":"ip","name":"pasturestack_hostports"}},
  {"chain":{"family":"ip","table":"pasturestack_hostports","name":"prerouting","type":"nat","hook":"prerouting","prio":-101,"policy":"accept"}},
