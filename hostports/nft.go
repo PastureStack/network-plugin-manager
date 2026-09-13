@@ -50,7 +50,7 @@ func (w *watcher) checkNFTRules() error {
 		ruleCount["output"]++
 		ruleCount["postrouting"]++
 	}
-	ruleCount["forward"] = 2 + len(sortedForwardSubnets(w.applied.ForwardSubnets))
+	ruleCount["forward"] = 2 + len(sortedForwardSubnets(w.applied.ForwardSubnets)) + len(sortedForwardPeers(w.applied))
 	seen := map[string]bool{}
 	actualRules := map[string]int{}
 	for _, item := range listing.NFTables {
@@ -161,6 +161,9 @@ func nftHostportBatch(rules ruleSet, existing bool) []byte {
 	buf.WriteString(" }\n chain forward {\n  type filter hook forward priority -1; policy accept;\n")
 	for _, subnet := range sortedForwardSubnets(rules.ForwardSubnets) {
 		fmt.Fprintf(buf, "  ip saddr %s ip daddr %s meta mark set meta mark | 0x1068 accept\n", subnet, subnet)
+	}
+	for _, pair := range sortedForwardPeers(rules) {
+		fmt.Fprintf(buf, "  ip saddr %s ip daddr %s meta mark set meta mark | 0x1068 accept\n", pair.Peer, pair.Local)
 	}
 	// An accept verdict here is NOT a final accept through Docker's native
 	// bridge filter chains. Docker must be configured to recognize mark 0x1068

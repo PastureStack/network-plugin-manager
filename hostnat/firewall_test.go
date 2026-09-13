@@ -21,6 +21,18 @@ func TestXTMasqueradePreservesSameSubnetSource(t *testing.T) {
 	}
 }
 
+func TestPerHostPeerBypassesOnlyOwnedMasquerade(t *testing.T) {
+	rule := MASQRule{Subnet: "10.51.1.0/24", Bridge: "docker0", Peers: []string{"10.51.2.0/24"}}
+	xt := string(rule.iptables())
+	if !strings.Contains(xt, "-s 10.51.1.0/24 -d 10.51.2.0/24 -j RETURN") {
+		t.Fatal("xtables did not preserve source for a validated peer")
+	}
+	nft := string(nftNATScript(ruleSet{MASQ: map[string]MASQRule{"net": rule}}))
+	if !strings.Contains(nft, "ip saddr 10.51.1.0/24 ip daddr 10.51.2.0/24 return") || strings.Contains(nft, "flush ruleset") {
+		t.Fatal("native nft peer exception is missing or too broad")
+	}
+}
+
 func TestNATRejectsMalformedMetadataBeforeMutation(t *testing.T) {
 	cases := map[string]ruleSet{
 		"global-subnet": {MASQ: map[string]MASQRule{"n": {Subnet: "0.0.0.0/0", Bridge: "pst0"}}},

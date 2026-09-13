@@ -32,6 +32,28 @@ func TestForwardSubnetSupportsPastureBridge(t *testing.T) {
 	}
 }
 
+func TestPerHostPeerMarksOnlyManagedSubnets(t *testing.T) {
+	rules := ruleSet{
+		Ports:          map[string]PortRule{},
+		ForwardSubnets: map[string]string{"net": "10.51.1.0/24"},
+		ForwardPeers:   map[string][]string{"net": {"10.51.2.0/24"}},
+	}
+	if err := validateRuleSet(rules); err != nil {
+		t.Fatal(err)
+	}
+	batch := string(nftHostportBatch(rules, false))
+	if !strings.Contains(batch, "ip saddr 10.51.2.0/24 ip daddr 10.51.1.0/24 meta mark set meta mark | 0x1068 accept") {
+		t.Fatal("native nft did not mark an active peer's routed traffic")
+	}
+	if strings.Contains(batch, "ip saddr 0.0.0.0/0") || strings.Contains(batch, "flush ruleset") {
+		t.Fatal("native nft peer exception is too broad")
+	}
+	rules.ForwardPeers["net"] = []string{"0.0.0.0/0"}
+	if err := validateRuleSet(rules); err == nil {
+		t.Fatal("global peer subnet was accepted")
+	}
+}
+
 func TestBridgeTypeRetainsLegacyCompatibility(t *testing.T) {
 	if !isBridgeCNIType("pasture-bridge") || !isBridgeCNIType("rancher-bridge") {
 		t.Fatal("expected native and legacy bridge types to be supported")
@@ -188,12 +210,17 @@ func TestBoundHostIPIsRespectedInLocalOutput(t *testing.T) {
 
 func TestApplyIptablesValidatesBeforeUpdatingOrRepairingHooks(t *testing.T) {
 	var calls []string
+	rules := testRuleSet()
+	rules.ForwardPeers = map[string][]string{"network": {"10.51.2.0/24"}}
 	w := &watcher{
 		backend: firewall.Backend{Mode: firewall.IptablesNFT, Command: "iptables-nft", Restore: "iptables-nft-restore"},
 		restoreRules: func(name string, args []string, data []byte) error {
 			calls = append(calls, name+" "+strings.Join(args, " "))
 			if !strings.Contains(string(data), "-A CATTLE_FORWARD -s 10.42.0.0/16") {
 				t.Fatal("missing forward rule")
+			}
+			if !strings.Contains(string(data), "-A CATTLE_FORWARD -s 10.51.2.0/24 -d 10.42.0.0/16 -j ACCEPT") {
+				t.Fatal("missing bounded peer forward rule")
 			}
 			return nil
 		},
@@ -206,7 +233,7 @@ func TestApplyIptablesValidatesBeforeUpdatingOrRepairingHooks(t *testing.T) {
 			return []byte("-A FORWARD -j CATTLE_FORWARD\n"), nil
 		},
 	}
-	if err := w.apply(testRuleSet()); err != nil {
+	if err := w.apply(rules); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) < 3 || calls[0] != "iptables-nft-restore --test -n" || calls[1] != "iptables-nft-restore -n" {
