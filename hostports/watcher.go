@@ -15,6 +15,7 @@ import (
 
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/firewall"
+	"github.com/PastureStack/network-plugin-manager/internal/hostlabel"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
@@ -311,7 +312,11 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 	}
 	for uuid, network := range networks {
 		if subnet := forwardSubnetForNetwork(network); subnet != "" {
-			newRules.ForwardSubnets[uuid] = subnet
+			resolved, err := hostlabel.Resolve(subnet, host.Labels)
+			if err != nil {
+				return fmt.Errorf("network %s hostport subnet: %w", uuid, err)
+			}
+			newRules.ForwardSubnets[uuid] = resolved
 		}
 	}
 

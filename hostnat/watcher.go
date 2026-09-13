@@ -18,6 +18,7 @@ import (
 	"github.com/PastureStack/network-plugin-manager/conntracksync/conntrack"
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/firewall"
+	"github.com/PastureStack/network-plugin-manager/internal/hostlabel"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
@@ -225,6 +226,11 @@ func (w *watcher) onChange(version string) error {
 		networksByUUID[network.UUID] = network
 		rule := w.networkToRule(network)
 		if rule != nil {
+			resolved, err := hostlabel.Resolve(rule.Subnet, host.Labels)
+			if err != nil {
+				return fmt.Errorf("network %s hostnat subnet: %w", network.UUID, err)
+			}
+			rule.Subnet = resolved
 			newRules.MASQ[network.UUID] = *rule
 		}
 	}
