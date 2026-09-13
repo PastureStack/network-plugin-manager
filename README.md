@@ -37,7 +37,12 @@ themselves establish a managed-service or multi-host rollout.
 
 The `v0.8.16` image was published with GHCR manifest digest
 `sha256:a042c582689561b43349fa83ed92269e849038be3b7a2342e8a9ef0149460f92`.
-The `v0.8.17` source adds bounded cross-host exceptions for the per-host-subnet
+The current published image is `v0.8.17`, with GHCR manifest digest
+`sha256:f13654b27b71f3fbddbcf33272c10b342d513dd402a255bdda1f341cfbe908f8`.
+Its signed tag resolves to verified source commit
+`e29dd5cefa373140d76e3a21da9bd95a3bec97e3`; the release workflow passed
+tests, image scanning, checksums, SBOM, and provenance gates. This version adds
+bounded cross-host exceptions for the per-host-subnet
 network: only active hosts with distinct, valid subnet labels are peers. Their
 traffic retains its container source IP and is marked before Docker's native
 nft bridge filter. An active host with a missing or overlapping label fails
@@ -50,8 +55,11 @@ On two isolated Ubuntu 26.04.1 / Docker 29.8 QA hosts, a source-equivalent
 DNS, public HTTPS egress, and host port 32792 after Docker restarts and host
 reboots. The second host was also explicitly switched to `iptables-nft`, then
 `iptables-legacy`, with the same cross-host checks passing in each mode. It was
-restored to native nft afterward. The manager follows the Docker-selected
-backend; it does not change the host's firewall preference. This bounded test
+restored to native nft afterward. The official `v0.8.17` image was then used on
+both native-nft hosts with the official IPsec/VXLAN `v0.14.34` image; manager
+health, bidirectional TCP 42, Metadata HTTP 200, public HTTPS, and published
+host ports all passed. The manager follows the Docker-selected backend; it
+does not change the host's firewall preference. This bounded test
 does not establish every existing iptables or IPsec deployment's migration safety.
 
 The current preflight inspects already loaded legacy tables using an
@@ -149,7 +157,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.8.15 IMAGE_NAMESPACE=local/pasturestack make package
+VERSION_OVERRIDE=v0.8.17 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.
