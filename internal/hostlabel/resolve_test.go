@@ -13,6 +13,9 @@ func TestResolve(t *testing.T) {
 		{name: "missing label", input: "__host_label__: io.pasturestack.network.per-host-subnet.subnet", wantError: true},
 		{name: "empty key", input: "__host_label__: ", wantError: true},
 		{name: "malformed key", input: "__host_label__: invalid key", wantError: true},
+		{name: "invalid subnet", input: "__host_label__: subnet", labels: map[string]string{"subnet": "invalid"}, wantError: true},
+		{name: "noncanonical subnet", input: "__host_label__: subnet", labels: map[string]string{"subnet": "10.51.1.4/24"}, wantError: true},
+		{name: "rule injection", input: "__host_label__: subnet", labels: map[string]string{"subnet": "10.51.1.0/24\n-A INPUT -j ACCEPT"}, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := Resolve(tc.input, tc.labels)
@@ -22,4 +25,3 @@ func TestResolve(t *testing.T) {
 		})
 	}
 }
-

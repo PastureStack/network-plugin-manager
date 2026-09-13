@@ -2,6 +2,7 @@ package hostlabel
 
 import (
 	"fmt"
+	"net"
 	"strings"
 )
 
@@ -21,6 +22,9 @@ func Resolve(value string, labels map[string]string) (string, error) {
 	if resolved == "" {
 		return "", fmt.Errorf("network host label %q is missing or empty", key)
 	}
+	ip, subnet, err := net.ParseCIDR(resolved)
+	if err != nil || ip.To4() == nil || !ip.Equal(subnet.IP) {
+		return "", fmt.Errorf("network host label %q must be a canonical IPv4 subnet", key)
+	}
 	return resolved, nil
 }
-
