@@ -208,6 +208,31 @@ func TestBoundHostIPIsRespectedInLocalOutput(t *testing.T) {
 	}
 }
 
+func TestPublishedUDPDNATIsAcceptedForWholeFlow(t *testing.T) {
+	rules := ruleSet{Ports: map[string]PortRule{
+		"vxlan": {Bridge: "docker0", SourceIP: "0.0.0.0", SourcePort: "4789", TargetIP: "10.42.18.75", TargetPort: "4789", Protocol: "udp"},
+	}, ForwardSubnets: map[string]string{}}
+	var iptablesRules string
+	w := &watcher{
+		backend: firewall.Backend{Mode: firewall.IptablesLegacy, Command: "iptables-legacy", Restore: "iptables-legacy-restore"},
+		restoreRules: func(_ string, _ []string, data []byte) error {
+			iptablesRules = string(data)
+			return nil
+		},
+		runCommand: func(...string) error { return nil },
+		output:     func(...string) ([]byte, error) { return []byte("-A FORWARD -j CATTLE_FORWARD\n"), nil },
+	}
+	if err := w.apply(rules); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(iptablesRules, "-A CATTLE_FORWARD -m conntrack --ctstate DNAT -d 10.42.18.75 -p udp -m udp --dport 4789 -j ACCEPT") {
+		t.Fatal("legacy backend lacks target-scoped forwarding for later UDP datagrams")
+	}
+	if got := string(nftHostportBatch(rules, false)); !strings.Contains(got, "ct status dnat ip daddr 10.42.18.75 udp dport 4789 meta mark set meta mark | 0x1068 accept") {
+		t.Fatal("native backend lacks per-datagram Docker bridge mark")
+	}
+}
+
 func TestApplyIptablesValidatesBeforeUpdatingOrRepairingHooks(t *testing.T) {
 	var calls []string
 	rules := testRuleSet()
@@ -221,6 +246,9 @@ func TestApplyIptablesValidatesBeforeUpdatingOrRepairingHooks(t *testing.T) {
 			}
 			if !strings.Contains(string(data), "-A CATTLE_FORWARD -s 10.51.2.0/24 -d 10.42.0.0/16 -j ACCEPT") {
 				t.Fatal("missing bounded peer forward rule")
+			}
+			if !strings.Contains(string(data), "-A CATTLE_FORWARD -m conntrack --ctstate DNAT -d 10.42.1.2 -p tcp -m tcp --dport 8080 -j ACCEPT") {
+				t.Fatal("missing flow-wide, target-scoped hostport forward rule")
 			}
 			return nil
 		},
@@ -329,6 +357,7 @@ func TestNativeNFTUsesOwnedTableAndSingleCheckedBatch(t *testing.T) {
 		"type nat hook postrouting priority 99",
 		"type filter hook forward priority -1",
 		"meta mark & 0x1068 == 0x1068 accept",
+		"ct status dnat ip daddr 10.42.1.2 tcp dport 8080 meta mark set meta mark | 0x1068 accept",
 		"ip saddr 10.42.0.0/16 ip daddr 10.42.0.0/16 meta mark set meta mark | 0x1068 accept",
 	} {
 		if !strings.Contains(string(checks), expected) {

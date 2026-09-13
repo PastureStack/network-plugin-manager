@@ -74,3 +74,10 @@ backends, and check workload egress, DNS, and host ports before returning the
 host to service. If ownership or references are unclear, stop and investigate.
 Never flush a whole table, change a global policy, remove Docker rules, load
 legacy modules as a workaround, or silently fall back to another backend.
+
+Host-port authorization is scoped to the manager's own published DNAT targets
+on every forwarded packet. The NAT hook sees only the first packet of a
+conntracked UDP flow; relying on its firewall mark alone can drop later VXLAN
+datagrams at Docker's bridge filter. The filter-path rule also requires DNAT
+state and the exact target address, protocol, and port. It does not create a
+host-wide accept rule or change Docker's default FORWARD policy.

@@ -50,7 +50,7 @@ func (w *watcher) checkNFTRules() error {
 		ruleCount["output"]++
 		ruleCount["postrouting"]++
 	}
-	ruleCount["forward"] = 2 + len(sortedForwardSubnets(w.applied.ForwardSubnets)) + len(sortedForwardPeers(w.applied))
+	ruleCount["forward"] = 2 + len(sortedForwardSubnets(w.applied.ForwardSubnets)) + len(sortedForwardPeers(w.applied)) + len(w.applied.Ports)
 	seen := map[string]bool{}
 	actualRules := map[string]int{}
 	for _, item := range listing.NFTables {
@@ -164,6 +164,13 @@ func nftHostportBatch(rules ruleSet, existing bool) []byte {
 	}
 	for _, pair := range sortedForwardPeers(rules) {
 		fmt.Fprintf(buf, "  ip saddr %s ip daddr %s meta mark set meta mark | 0x1068 accept\n", pair.Peer, pair.Local)
+	}
+	// NAT chains see only the first packet of a conntracked flow. Restore the
+	// Docker bridge-accept mark on every forwarded datagram, scoped to our
+	// published DNAT targets (not every DNAT on the host).
+	for _, key := range keys {
+		p := rules.Ports[key]
+		fmt.Fprintf(buf, "  ct status dnat ip daddr %s %s dport %s meta mark set meta mark | 0x1068 accept\n", p.TargetIP, p.Protocol, p.TargetPort)
 	}
 	// An accept verdict here is NOT a final accept through Docker's native
 	// bridge filter chains. Docker must be configured to recognize mark 0x1068
