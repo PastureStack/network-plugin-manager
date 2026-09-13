@@ -220,7 +220,7 @@ func TestPublishedUDPDNATIsAcceptedForWholeFlow(t *testing.T) {
 			return nil
 		},
 		runCommand: func(...string) error { return nil },
-		output: func(...string) ([]byte, error) { return []byte("-A FORWARD -j CATTLE_FORWARD\n"), nil },
+		output:     func(...string) ([]byte, error) { return []byte("-A FORWARD -j CATTLE_FORWARD\n"), nil },
 	}
 	if err := w.apply(rules); err != nil {
 		t.Fatal(err)
