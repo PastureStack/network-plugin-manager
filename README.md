@@ -68,7 +68,7 @@ It restores target-scoped authorization for every packet in an owned DNAT
 flow, including later UDP datagrams, without accepting unrelated Docker
 traffic.
 
-The current release is `v0.8.20`. Managed bridge subnets can initiate
+The current release is `v0.8.21`. Managed bridge subnets can initiate
 outbound traffic and receive established or related replies. Shared overlay
 subnets used by IPsec and VXLAN can also receive new connections from the
 same validated subnet through the exact managed bridge. Existing templates
@@ -93,20 +93,44 @@ image identity from the release's checksum-covered
 [`published.txt`](https://github.com/PastureStack/network-plugin-manager/releases/latest/download/published.txt)
 rather than copying an older release digest.
 
+`v0.8.21` also closes two control-plane convergence gaps without moving
+responsibility between plugins. If Metadata temporarily omits the primary IP
+of a running container that publishes a host port, the manager reads that
+exact container's network namespace and accepts an address only when exactly
+one IPv4 address belongs to the already validated managed bridge subnet. It
+inspects the Docker PID before and after the namespace read; a stopped or
+replaced process, an absent subnet, or zero/multiple matching addresses fails
+closed and leaves the previously working rule set in place for retry.
+
+When more than one local network driver provides the same CNI executable, the
+manager deterministically selects the highest numeric OCI image version, with
+the immutable container ID as a stable tie-breaker. The host-side wrapper is
+bound to that exact inspected container ID and executes the selected driver's
+private `/opt/cni/bin` bundle with a private `CNI_PATH`; it does not list and
+reselect a same-labelled container at invocation time. Binary names are
+strictly validated, wrappers are installed atomically as regular mode-0700
+files, and content, type, or permission drift is repaired. Older drivers that
+do not yet contain a private bundle retain the existing shared-binary fallback.
+The driver still owns its CNI data plane; Network Plugin Manager continues to
+own only host NAT, forwarding, and host-port reconciliation.
+
 The current preflight inspects already loaded legacy tables using an
 independent iptables-legacy executable. Active old platform or Docker hooks
 in the other frontend block startup; an unhooked chain declaration alone does
 not select or block a backend. The manager never migrates host rules or
 switches Docker's selected backend automatically.
 
-A bounded two-host upgrade gate passed after operator-controlled cleanup of
-old platform hooks: both hosts retained nft Docker hooks, the new manager was
-healthy, Metadata and IPsec services ran, and metadata network namespaces
-resolved DNS and reached the management ping. A service port on the second
-host returned HTTP 200. This component does not migrate or remove old rules
-automatically. Verify the official image digest and perform controlled host
-migration for each deployment. The complete Ubuntu 26.04 native-nft
-control-plane gate remains pending Catalog/Server integration.
+A bounded two-host Ubuntu 26.04 / Docker 29 gate exercised the release
+candidate through a managed-service upgrade. Docker native nftables on one
+host and `iptables-nft` on the other passed IPsec, VXLAN, per-host-subnet, and
+flat Layer 2 cross-host traffic, Metadata, DNS, platform egress, and host-port
+checks. The second host passed the same checks after a Docker restart and
+after an explicit switch to `iptables-legacy`, then was restored to its
+original `iptables-nft` frontend. Injected CNI-wrapper drift was restored to
+the same exact selected provider on both hosts. This component does not
+migrate or remove old rules automatically. Verify the official image digest
+and perform controlled host migration for each deployment; Catalog and Server
+integration are separate release gates.
 
 The maintained image coordinate is:
 
@@ -188,7 +212,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.8.20 IMAGE_NAMESPACE=local/pasturestack make package
+VERSION_OVERRIDE=v0.8.21 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.

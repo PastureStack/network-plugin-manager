@@ -1,11 +1,13 @@
 package binexec
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +21,41 @@ import (
 )
 
 var (
-	reapplyEvery = 5 * time.Minute
-	binDir       = cniglue.CniPath[0]
+	reapplyEvery           = 5 * time.Minute
+	wrapperDriftCheckEvery = 10 * time.Second
+	binDir                 = cniglue.CniPath[0]
 )
+
+const driverWrapperScript = `#!/bin/sh
+set -eu
+target=%s
+binary_name=%s
+socket=/var/run/docker.sock
+api_prefix=""
+if [ -n "${DOCKER_API_VERSION:-}" ]; then
+    case "${DOCKER_API_VERSION}" in
+        *[!0-9.]*|'') echo '{"code":100,"msg":"invalid Docker API version"}' >&2; exit 1 ;;
+    esac
+    api_prefix="/v${DOCKER_API_VERSION}"
+fi
+case "${target}" in
+    *[!0-9a-fA-F]*|'') echo '{"code":100,"msg":"invalid CNI driver container id"}' >&2; exit 1 ;;
+esac
+pid="$(curl -fsS --max-time 10 --unix-socket "${socket}" \
+    "http://localhost${api_prefix}/containers/${target}/json" | jq -r '.State.Pid // 0' || true)"
+case "${pid}" in
+    ''|0|*[!0-9]*)
+    echo "{\"code\":100,\"msg\":\"selected cni driver container not running: ${target}\"}" >&2
+    exit 1
+    ;;
+esac
+private_binary="/opt/cni/bin/${binary_name}"
+if /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- test -x "${private_binary}"; then
+    exec /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- \
+        /usr/bin/env CNI_PATH=/opt/cni/bin "${private_binary}" "$@"
+fi
+exec /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- "$0" "$@"
+`
 
 func Watch(c metadata.Client, dc *client.Client) *Watcher {
 	w := &Watcher{
@@ -31,6 +65,7 @@ func Watch(c metadata.Client, dc *client.Client) *Watcher {
 	}
 	w.onChange("")
 	go c.OnChange(5, w.onChangeNoError)
+	go w.watchWrapperDrift()
 	return w
 }
 
@@ -45,6 +80,21 @@ type Watcher struct {
 func (w *Watcher) onChangeNoError(version string) {
 	if err := w.onChange(version); err != nil {
 		logrus.Errorf("Failed to apply cni conf: %v", err)
+	}
+}
+
+func (w *Watcher) watchWrapperDrift() {
+	ticker := time.NewTicker(wrapperDriftCheckEvery)
+	defer ticker.Stop()
+	for range ticker.C {
+		w.Lock()
+		if len(w.applied) != 0 && !w.wrapperFilesMatch(w.applied) {
+			logrus.Warn("CNI driver wrapper drift detected; restoring selected providers")
+			if err := w.apply(w.applied); err != nil {
+				logrus.Errorf("Failed to restore CNI driver wrappers: %v", err)
+			}
+		}
+		w.Unlock()
 	}
 }
 
@@ -112,17 +162,47 @@ func (w *Watcher) onChange(version string) error {
 			if container.ExternalId != "" && container.HostUUID == hostUUID && hasDriverLabel(container) {
 				binName := getBinaryName(container)
 				if binName != "" {
-					binaries[binName] = container.ExternalId
+					if !validBinaryName(binName) {
+						return fmt.Errorf("invalid CNI driver binary name %q", binName)
+					}
+					current, exists := binaries[binName]
+					if !exists || w.preferBinaryProvider(current, container.ExternalId) {
+						binaries[binName] = container.ExternalId
+					}
 				}
 			}
 		}
 	}
 
-	if time.Now().Sub(w.lastApplied) > reapplyEvery || !reflect.DeepEqual(binaries, w.applied) {
+	needsApply := time.Now().Sub(w.lastApplied) > reapplyEvery || !reflect.DeepEqual(binaries, w.applied)
+	if !needsApply && !w.wrapperFilesMatch(binaries) {
+		logrus.Warn("CNI driver wrapper drift detected; restoring selected providers")
+		needsApply = true
+	}
+	if needsApply {
 		return w.apply(binaries)
 	}
 
 	return nil
+}
+
+func (w *Watcher) wrapperFilesMatch(binaries map[string]string) bool {
+	for name, target := range binaries {
+		expected := renderDriverWrapper(target, name)
+		if !wrapperFileMatches(filepath.Join(binDir, name), expected) {
+			return false
+		}
+	}
+	return true
+}
+
+func wrapperFileMatches(path string, expected []byte) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0700 {
+		return false
+	}
+	actual, err := os.ReadFile(path)
+	return err == nil && bytes.Equal(actual, expected)
 }
 
 func (w *Watcher) apply(binaries map[string]string) error {
@@ -130,41 +210,9 @@ func (w *Watcher) apply(binaries map[string]string) error {
 		logrus.Infof("Setting up binaries for: %v", binaries)
 	}
 
-	const script = `#!/bin/sh
-set -eu
-target=%s
-service_label=%s
-socket=/var/run/docker.sock
-api_prefix=""
-if [ -n "${DOCKER_API_VERSION:-}" ]; then
-    case "${DOCKER_API_VERSION}" in
-        *[!0-9.]*|'') echo '{"code":100,"msg":"invalid Docker API version"}' >&2; exit 1 ;;
-    esac
-    api_prefix="/v${DOCKER_API_VERSION}"
-fi
-cid=""
-if [ -n "${service_label}" ]; then
-    filters="$(jq -cn --arg label "io.rancher.stack_service.name=${service_label}" '{label:[$label]}')"
-    cid="$(curl -fsS --max-time 10 --unix-socket "${socket}" --get \
-        --data-urlencode "filters=${filters}" \
-        "http://localhost${api_prefix}/containers/json" | jq -r '.[0].Id // empty')"
-fi
-if [ -z "${cid}" ]; then
-    cid="${target}"
-fi
-case "${cid}" in
-    *[!0-9a-fA-F]*|'') echo '{"code":100,"msg":"invalid CNI driver container id"}' >&2; exit 1 ;;
-esac
-pid="$(curl -fsS --max-time 10 --unix-socket "${socket}" \
-    "http://localhost${api_prefix}/containers/${cid}/json" | jq -r '.State.Pid // 0' || true)"
-if [ -z "${pid}" ] || [ "${pid}" = "0" ]; then
-    echo "{\"code\":100,\"msg\":\"cni driver container not running: ${service_label:-${target}}\"}" >&2
-    exit 1
-fi
-exec /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- $0 "$@"
-`
-
-	os.MkdirAll(binDir, 0700)
+	if err := os.MkdirAll(binDir, 0700); err != nil {
+		return fmt.Errorf("create CNI wrapper directory: %w", err)
+	}
 
 	var lastErr error
 	for name, target := range binaries {
@@ -180,22 +228,12 @@ exec /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- $0 "$@"
 			break
 		}
 
-		serviceLabel := ""
-		if container.Config != nil && container.Config.Labels != nil {
-			serviceLabel = container.Config.Labels["io.rancher.stack_service.name"]
-		}
-
-		ptmp := filepath.Join(binDir, name+".tmp")
 		p := filepath.Join(binDir, name)
-		content := []byte(fmt.Sprintf(script, shellQuote(target), shellQuote(serviceLabel)))
+		content := renderDriverWrapper(target, name)
 		logrus.Debugf("Writing %s:\n%s", p, content)
-		if err := os.WriteFile(ptmp, content, 0700); err != nil {
+		if err := writeWrapperAtomic(p, content); err != nil {
 			lastErr = err
 			break
-		}
-
-		if err := os.Rename(ptmp, p); err != nil {
-			lastErr = err
 		}
 	}
 
@@ -205,6 +243,132 @@ exec /usr/bin/nsenter -m -u -i -n -p -t "${pid}" -- $0 "$@"
 	}
 
 	return lastErr
+}
+
+func (w *Watcher) preferBinaryProvider(current, candidate string) bool {
+	currentVersion := w.containerImageVersion(current)
+	candidateVersion := w.containerImageVersion(candidate)
+	return preferProvider(current, currentVersion, candidate, candidateVersion)
+}
+
+func preferProvider(current, currentVersion, candidate, candidateVersion string) bool {
+	comparison, comparable := compareNumericVersions(candidateVersion, currentVersion)
+	if comparable && comparison != 0 {
+		return comparison > 0
+	}
+	_, currentNumeric := numericVersionParts(currentVersion)
+	_, candidateNumeric := numericVersionParts(candidateVersion)
+	if currentNumeric != candidateNumeric {
+		return candidateNumeric
+	}
+	return candidate < current
+}
+
+func (w *Watcher) containerImageVersion(containerID string) string {
+	if w.dc == nil {
+		return ""
+	}
+	result, err := w.dc.ContainerInspect(context.Background(), containerID, client.ContainerInspectOptions{})
+	if err != nil || result.Container.Config == nil || result.Container.Config.Labels == nil {
+		return ""
+	}
+	return strings.TrimSpace(result.Container.Config.Labels["org.opencontainers.image.version"])
+}
+
+func writeWrapperAtomic(path string, content []byte) (err error) {
+	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create private CNI wrapper temporary file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = temporary.Close()
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if _, err := temporary.Write(content); err != nil {
+		return fmt.Errorf("write private CNI wrapper temporary file: %w", err)
+	}
+	if err := temporary.Chmod(0700); err != nil {
+		return fmt.Errorf("set private CNI wrapper permissions: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		return fmt.Errorf("sync private CNI wrapper temporary file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close private CNI wrapper temporary file: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("install private CNI wrapper: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func renderDriverWrapper(target, name string) []byte {
+	return []byte(fmt.Sprintf(driverWrapperScript, shellQuote(target), shellQuote(name)))
+}
+
+func compareNumericVersions(left, right string) (int, bool) {
+	leftParts, leftOK := numericVersionParts(left)
+	rightParts, rightOK := numericVersionParts(right)
+	if !leftOK || !rightOK {
+		return 0, false
+	}
+	for index := 0; index < len(leftParts) || index < len(rightParts); index++ {
+		leftValue, rightValue := 0, 0
+		if index < len(leftParts) {
+			leftValue = leftParts[index]
+		}
+		if index < len(rightParts) {
+			rightValue = rightParts[index]
+		}
+		if leftValue < rightValue {
+			return -1, true
+		}
+		if leftValue > rightValue {
+			return 1, true
+		}
+	}
+	return 0, true
+}
+
+func numericVersionParts(value string) ([]int, bool) {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+	if value == "" {
+		return nil, false
+	}
+	parts := strings.Split(value, ".")
+	parsed := make([]int, len(parts))
+	for index, part := range parts {
+		if part == "" {
+			return nil, false
+		}
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 0 {
+			return nil, false
+		}
+		parsed[index] = value
+	}
+	return parsed, true
+}
+
+func validBinaryName(value string) bool {
+	if value == "" || value == "." || value == ".." || strings.ContainsAny(value, `/\\`) {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func shellQuote(value string) string {

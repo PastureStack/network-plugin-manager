@@ -2,6 +2,7 @@ package hostports
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/netip"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
 	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netns"
 )
 
 var (
@@ -89,6 +92,9 @@ type watcher struct {
 	routeLocalnetStatePath string
 	report                 func(error)
 	localHost              func(metadata.Client, *client.Client) (metadata.Host, error)
+	containerIPv4          func(containerID, subnet string) (string, error)
+	containerPID           func(containerID string) (int, error)
+	namespaceIPv4          func(pid int) ([]netlink.Addr, error)
 }
 
 type ruleSet struct {
@@ -411,8 +417,10 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 		}
 
 		if container.HostUUID != host.UUID ||
-			!(network.HostPorts || (container.System && container.Labels[hostPortsLabel] == "true")) ||
-			container.PrimaryIp == "" {
+			!(network.HostPorts || (container.System && container.Labels[hostPortsLabel] == "true")) {
+			continue
+		}
+		if len(container.Ports) == 0 {
 			continue
 		}
 
@@ -421,9 +429,24 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 			return fmt.Errorf("network %s bridge configuration: %w", container.NetworkUUID, err)
 		}
 		bridge, masqueradeDNAT = bridgeConfig.Bridge, bridgeConfig.ExternalGateway
+		targetIP := container.PrimaryIp
+		if targetIP == "" {
+			subnet := newRules.ForwardSubnets[container.NetworkUUID]
+			if subnet == "" {
+				return fmt.Errorf("container %s (%s) publishes host ports without a metadata IP or managed subnet", container.Name, container.ExternalId)
+			}
+			resolveContainerIPv4 := w.containerIPv4
+			if resolveContainerIPv4 == nil {
+				resolveContainerIPv4 = w.resolveContainerIPv4
+			}
+			targetIP, err = resolveContainerIPv4(container.ExternalId, subnet)
+			if err != nil {
+				return fmt.Errorf("resolve host-port address for container %s (%s): %w", container.Name, container.ExternalId, err)
+			}
+		}
 
 		for _, port := range container.Ports {
-			rule, ok := parsePortRule(bridge, host.AgentIP, container.PrimaryIp, port)
+			rule, ok := parsePortRule(bridge, host.AgentIP, targetIP, port)
 			if !ok {
 				return fmt.Errorf("invalid host port definition for container %s (%s): %q", container.Name, container.ExternalId, port)
 			}
@@ -447,6 +470,106 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 
 	logrus.Debugf("No change in applied rules")
 	return nil
+}
+
+func (w *watcher) resolveContainerIPv4(containerID, subnet string) (string, error) {
+	if containerID == "" {
+		return "", fmt.Errorf("Docker container ID is empty")
+	}
+	prefix, err := netip.ParsePrefix(subnet)
+	if err != nil || !prefix.Addr().Is4() {
+		return "", fmt.Errorf("managed subnet %q is not a valid IPv4 prefix", subnet)
+	}
+	prefix = prefix.Masked()
+
+	inspectPID := w.containerPID
+	if inspectPID == nil {
+		inspectPID = w.inspectRunningContainerPID
+	}
+	pid, err := inspectPID(containerID)
+	if err != nil {
+		return "", err
+	}
+	readAddresses := w.namespaceIPv4
+	if readAddresses == nil {
+		readAddresses = readContainerNamespaceIPv4
+	}
+	addresses, err := readAddresses(pid)
+	if err != nil {
+		return "", err
+	}
+	confirmedPID, err := inspectPID(containerID)
+	if err != nil {
+		return "", fmt.Errorf("revalidate Docker container after network namespace read: %w", err)
+	}
+	if confirmedPID != pid {
+		return "", fmt.Errorf("Docker container PID changed during network namespace read: %d to %d", pid, confirmedPID)
+	}
+	return selectContainerIPv4(addresses, prefix)
+}
+
+func (w *watcher) inspectRunningContainerPID(containerID string) (int, error) {
+	if w.dc == nil {
+		return 0, fmt.Errorf("Docker client is unavailable")
+	}
+	inspectResult, err := w.dc.ContainerInspect(context.Background(), containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("inspect Docker container: %w", err)
+	}
+	state := inspectResult.Container.State
+	if state == nil || !state.Running || state.Pid <= 0 {
+		return 0, fmt.Errorf("Docker container is not running with a network namespace")
+	}
+	return state.Pid, nil
+}
+
+func readContainerNamespaceIPv4(pid int) ([]netlink.Addr, error) {
+	ns, err := netns.GetFromPid(pid)
+	if err != nil {
+		return nil, fmt.Errorf("open network namespace: %w", err)
+	}
+	defer ns.Close()
+	handle, err := netlink.NewHandleAt(ns)
+	if err != nil {
+		return nil, fmt.Errorf("open netlink handle: %w", err)
+	}
+	defer handle.Delete()
+	addresses, err := handle.AddrList(nil, netlink.FAMILY_V4)
+	if err != nil {
+		return nil, fmt.Errorf("list network addresses: %w", err)
+	}
+	return addresses, nil
+}
+
+func selectContainerIPv4(addresses []netlink.Addr, prefix netip.Prefix) (string, error) {
+	candidates := make([]netip.Addr, 0, len(addresses))
+	for _, address := range addresses {
+		if address.IPNet == nil {
+			continue
+		}
+		parsed, ok := netip.AddrFromSlice(address.IP)
+		if !ok {
+			continue
+		}
+		parsed = parsed.Unmap()
+		if !parsed.Is4() || parsed.IsLoopback() || !prefix.Contains(parsed) {
+			continue
+		}
+		duplicate := false
+		for _, candidate := range candidates {
+			if candidate == parsed {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			candidates = append(candidates, parsed)
+		}
+	}
+	if len(candidates) != 1 {
+		return "", fmt.Errorf("expected exactly one address in managed subnet %s, found %d", prefix, len(candidates))
+	}
+	return candidates[0].String(), nil
 }
 
 func (w *watcher) apply(rules ruleSet) error {
