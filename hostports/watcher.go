@@ -96,6 +96,7 @@ type ruleSet struct {
 	ForwardSubnets       map[string]string
 	ForwardBridges       map[string]string
 	ForwardPeers         map[string][]string
+	SharedIngress        map[string]bool
 	RouteLocalnetBridges map[string]bool
 }
 
@@ -370,6 +371,12 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 			}
 			newRules.ForwardSubnets[uuid] = resolved
 			newRules.ForwardBridges[uuid] = bridgeConfig.Bridge
+			if bridgeConfig.SharedIngress {
+				if newRules.SharedIngress == nil {
+					newRules.SharedIngress = map[string]bool{}
+				}
+				newRules.SharedIngress[uuid] = true
+			}
 			if hostlabel.IsReference(subnet) {
 				if newRules.ForwardPeers == nil {
 					newRules.ForwardPeers = map[string][]string{}
@@ -490,6 +497,9 @@ func (w *watcher) apply(rules ruleSet) error {
 		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -i %s -s %s -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT\n", network.Bridge, network.Subnet))
 		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -o %s -d %s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n", network.Bridge, network.Subnet))
 	}
+	for _, network := range sortedSharedIngressNetworks(rules) {
+		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -o %s -s %s -d %s -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT\n", network.Bridge, network.Subnet, network.Subnet))
+	}
 	for _, pair := range sortedForwardPeers(rules) {
 		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -o %s -s %s -d %s -j ACCEPT\n", pair.Bridge, pair.Peer, pair.Local))
 	}
@@ -564,6 +574,11 @@ func validateRuleSet(rules ruleSet) error {
 	for uuid := range rules.ForwardBridges {
 		if rules.ForwardSubnets[uuid] == "" {
 			return fmt.Errorf("forward bridge network %s has no local subnet", uuid)
+		}
+	}
+	for uuid, enabled := range rules.SharedIngress {
+		if enabled && (rules.ForwardSubnets[uuid] == "" || rules.ForwardBridges[uuid] == "") {
+			return fmt.Errorf("shared ingress network %s has no managed bridge and subnet", uuid)
 		}
 	}
 	for uuid, peers := range rules.ForwardPeers {
@@ -659,6 +674,7 @@ type bridgeNetworkConfig struct {
 	Bridge          string
 	Subnet          string
 	ExternalGateway bool
+	SharedIngress   bool
 }
 
 func bridgeConfigForNetwork(network metadata.Network) (bridgeNetworkConfig, error) {
@@ -682,7 +698,19 @@ func bridgeConfigForNetwork(network metadata.Network) (bridgeNetworkConfig, erro
 		bridge, _ := props["bridge"].(string)
 		bridgeSubnet, _ := props["bridgeSubnet"].(string)
 		externalGateway, _ := props["skipBridgeConfigureIP"].(bool)
-		candidate := bridgeNetworkConfig{Bridge: bridge, Subnet: bridgeSubnet, ExternalGateway: externalGateway}
+		hostNat, _ := props["hostNat"].(bool)
+		sharedIngress := hostNat && bridgeSubnet != "" && !hostlabel.IsReference(bridgeSubnet)
+		if configured, exists := props["allowSharedSubnetIngress"]; exists {
+			value, ok := configured.(bool)
+			if !ok {
+				return bridgeNetworkConfig{}, fmt.Errorf("managed bridge entry %q has a non-boolean allowSharedSubnetIngress", key)
+			}
+			sharedIngress = value
+		}
+		if sharedIngress && hostlabel.IsReference(bridgeSubnet) {
+			return bridgeNetworkConfig{}, fmt.Errorf("managed bridge entry %q cannot combine shared ingress with a host-label subnet", key)
+		}
+		candidate := bridgeNetworkConfig{Bridge: bridge, Subnet: bridgeSubnet, ExternalGateway: externalGateway, SharedIngress: sharedIngress}
 		if !found {
 			result = candidate
 			resultKey = key
@@ -728,6 +756,16 @@ func sortedForwardNetworks(rules ruleSet) []forwardNetwork {
 		}
 		seen[identity] = true
 		result = append(result, network)
+	}
+	return result
+}
+
+func sortedSharedIngressNetworks(rules ruleSet) []forwardNetwork {
+	result := []forwardNetwork{}
+	for _, network := range sortedForwardNetworks(rules) {
+		if rules.SharedIngress[network.UUID] {
+			result = append(result, network)
+		}
 	}
 	return result
 }

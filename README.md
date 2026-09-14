@@ -68,10 +68,15 @@ It restores target-scoped authorization for every packet in an owned DNAT
 flow, including later UDP datagrams, without accepting unrelated Docker
 traffic.
 
-The current release is `v0.8.19`. Managed bridge subnets can initiate
-outbound traffic and receive only established or related replies; this keeps
-Metadata and DNS reachable behind current Docker bridge filters without
-opening unsolicited inbound forwarding or changing the host's global policy.
+The current release is `v0.8.20`. Managed bridge subnets can initiate
+outbound traffic and receive established or related replies. Shared overlay
+subnets used by IPsec and VXLAN can also receive new connections from the
+same validated subnet through the exact managed bridge. Existing templates
+with `hostNat: true` retain this behavior; current templates declare
+`allowSharedSubnetIngress: true` explicitly. Per-host subnets remain limited
+to the active peer CIDRs derived from host labels. These rules keep Metadata,
+DNS, and cross-host workload traffic reachable behind current Docker bridge
+filters without changing the host's global policy.
 Every forwarding exception is bound to the exact validated CNI bridge and
 subnet pair; missing or conflicting bridge metadata fails before any firewall
 change. This prevents traffic arriving on an unrelated host interface from
@@ -183,7 +188,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.8.19 IMAGE_NAMESPACE=local/pasturestack make package
+VERSION_OVERRIDE=v0.8.20 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.

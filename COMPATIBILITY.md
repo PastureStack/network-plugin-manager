@@ -82,16 +82,20 @@ datagrams at Docker's bridge filter. The filter-path rule also requires DNAT
 state and the exact target address, protocol, and port. It does not create a
 host-wide accept rule or change Docker's default FORWARD policy.
 
-Each managed bridge subnet may initiate forwarding, while traffic returning
-to it is accepted only in `ESTABLISHED` or `RELATED` conntrack states.
-Unsolicited traffic whose destination is a managed subnet is not admitted by
-this rule. Both directions are matched against the exact validated CNI bridge
-and subnet pair; missing or conflicting bridge metadata fails before any
-firewall change. Native nftables applies Docker's configured bridge-accept
-mark on both directions; the two iptables frontends use only the selected
-`CATTLE_FORWARD` chain. This bounded rule is what permits current Docker
-filters to carry Metadata, DNS, and normal workload egress without trusting a
-spoofed managed prefix arriving on another host interface.
+Each managed bridge subnet may initiate forwarding, while ordinary return
+traffic is limited to `ESTABLISHED` or `RELATED` conntrack states. A shared
+overlay may additionally opt into new inbound flows with
+`allowSharedSubnetIngress: true`; for compatibility, a fixed bridge subnet
+with `hostNat: true` has the same meaning when the explicit key is absent.
+That exception requires both source and destination to match the exact shared
+subnet and requires the packet to leave through the exact managed bridge.
+Host-label-based per-host subnets cannot enable this shared exception and use
+their narrower active-peer rules instead. Missing, conflicting, or non-boolean
+bridge metadata fails before any firewall change. Native nftables applies
+Docker's configured bridge-accept mark; the two iptables frontends use only
+the selected `CATTLE_FORWARD` chain. IPsec supplies authenticated transport;
+VXLAN and flat Layer 2 deployments still depend on a trusted underlay and
+must not expose the managed subnet to untrusted source spoofing.
 
 For a CNI bridge marked `skipBridgeConfigureIP`, the workload uses an
 external Layer 2 gateway. The manager therefore masquerades only its own DNAT
