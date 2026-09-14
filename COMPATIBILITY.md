@@ -24,6 +24,34 @@ These strings are compatibility identifiers, not product names, image names, pub
 
 The compatibility CA path is read only when the PastureStack-native path is absent. Catalog templates must use PastureStack image names and reviewed numeric tags, with release digests checked separately, even while retained labels are required by the control-plane wire contract.
 
+## CNI provider handoff and Metadata convergence
+
+Network drivers own their CNI executable and data-plane configuration. Network
+Plugin Manager only selects the local provider described by Metadata and
+installs the host-side handoff wrapper; it must not copy implementation logic
+between IPsec, VXLAN, per-host-subnet, or flat Layer 2 plugins. When providers
+overlap during a rolling upgrade, the highest numeric
+`org.opencontainers.image.version` wins and the immutable container ID is the
+deterministic tie-breaker. Unversioned providers remain compatible but cannot
+displace a valid newer numeric version. Unsafe binary names fail before a
+wrapper is written.
+
+Each wrapper is bound to the exact container that was inspected during
+reconciliation. Invocation inspects only that immutable ID, never a fresh
+same-service container listing, and prefers the selected provider's private
+`/opt/cni/bin` bundle with `CNI_PATH` scoped to the same directory. The shared
+binary path remains only as a compatibility fallback for older providers.
+Wrappers are atomically installed as regular mode-0700 files; content, type,
+and permission drift causes the selected wrappers to be restored.
+
+For a host-port container whose Metadata primary IP has not converged, the
+manager may read only that running container's network namespace. The Docker
+PID must remain identical across the read, the network must already expose a
+validated managed IPv4 subnet, and exactly one non-loopback address may match
+that subnet. Otherwise reconciliation fails closed and retries without
+replacing the previously applied firewall rules. This fallback does not infer
+an address from an arbitrary interface, another container, or a service label.
+
 ## Firewall backend migration
 
 The `iptables-legacy` frontend remains an explicit compatibility mode
