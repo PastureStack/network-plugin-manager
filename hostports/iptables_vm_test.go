@@ -53,7 +53,7 @@ func testIptablesOnDisposableVM(t *testing.T, mode firewall.Mode) {
 	if out, err := exec.Command(command, "-t", "nat", "-S", "DOCKER").CombinedOutput(); err != nil {
 		t.Fatalf("requires Docker-owned NAT chain in %s: %v: %s", mode, err, out)
 	}
-	for _, table := range []string{"nat", "filter"} {
+	for _, table := range []string{"raw", "nat", "filter"} {
 		out, err := xtVMCommand(command, "-t", table, "-S")
 		if err != nil {
 			t.Fatalf("inspect existing %s rules: %v: %s", table, err, out)
@@ -68,6 +68,7 @@ func testIptablesOnDisposableVM(t *testing.T, mode firewall.Mode) {
 			"isolated": {Bridge: "pstest0", SourceIP: "198.51.100.2", SourcePort: "55555", TargetIP: "10.254.250.2", TargetPort: "55556", Protocol: "tcp"},
 		},
 		ForwardSubnets: map[string]string{"isolated": "10.254.250.0/24"},
+		ForwardBridges: map[string]string{"isolated": "pstest0"},
 	}
 	w := &watcher{backend: firewall.Backend{Mode: mode, Command: command, Restore: restore}}
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -75,6 +76,7 @@ func testIptablesOnDisposableVM(t *testing.T, mode firewall.Mode) {
 			t.Fatalf("iptables-nft apply %d (includes --test -n): %v", attempt, err)
 		}
 		for _, hook := range []struct{ table, chain, target string }{
+			{"raw", "PREROUTING", hostPortsRawChain},
 			{"nat", "PREROUTING", "CATTLE_PREROUTING"},
 			{"nat", "OUTPUT", "CATTLE_OUTPUT"},
 			{"nat", "POSTROUTING", hostPortsPostRoutingChain},
@@ -100,6 +102,7 @@ func cleanupXTTestRules(t *testing.T, command string) {
 		table, chain string
 		spec         []string
 	}{
+		{"raw", "PREROUTING", []string{"-j", hostPortsRawChain}},
 		{"nat", "PREROUTING", []string{"-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_PREROUTING"}},
 		{"nat", "OUTPUT", []string{"-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_OUTPUT"}},
 		{"nat", "POSTROUTING", []string{"-j", hostPortsPostRoutingChain}},
@@ -118,6 +121,7 @@ func cleanupXTTestRules(t *testing.T, command string) {
 		}
 	}
 	for _, entry := range []struct{ table, chain string }{
+		{"raw", hostPortsRawChain},
 		{"nat", "CATTLE_PREROUTING"},
 		{"nat", "CATTLE_POSTROUTING"},
 		{"nat", "CATTLE_OUTPUT"},
@@ -135,7 +139,7 @@ func cleanupXTTestRules(t *testing.T, command string) {
 			t.Errorf("delete own chain %s/%s: %v: %s", entry.table, entry.chain, err, out)
 		}
 	}
-	for _, table := range []string{"nat", "filter"} {
+	for _, table := range []string{"raw", "nat", "filter"} {
 		out, err := xtVMCommand(command, "-t", table, "-S")
 		if err != nil {
 			t.Errorf("verify %s cleanup: %v: %s", table, err, out)

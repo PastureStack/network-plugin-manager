@@ -26,18 +26,33 @@ var (
 	baseRuleRepairEvery       = 30 * time.Second
 	hostPortsLabel            = "io.rancher.network.host_ports"
 	hostPortsPostRoutingChain = "CATTLE_HOSTPORTS_POSTROUTING"
+	hostPortsRawChain         = "CATTLE_HOSTPORTS_RAW"
 )
 
 // Watch is used to monitor metadata for changes
 func Watch(c metadata.Client, dc *client.Client, backend firewall.Backend, report func(error)) error {
+	routeLocalnetOriginal, err := loadRouteLocalnetState(routeLocalnetStatePath)
+	if err != nil {
+		return fmt.Errorf("load route_localnet ownership: %w", err)
+	}
+	previousRouteLocalnet := map[string]bool{}
+	for bridge := range routeLocalnetOriginal {
+		previousRouteLocalnet[bridge] = true
+	}
 	w := &watcher{
-		c:       c,
-		dc:      dc,
-		backend: backend,
-		report:  report,
+		c:                      c,
+		dc:                     dc,
+		backend:                backend,
+		report:                 report,
+		getRouteLocalnet:       readBridgeRouteLocalnet,
+		setRouteLocalnet:       setBridgeRouteLocalnet,
+		routeLocalnetOriginal:  routeLocalnetOriginal,
+		routeLocalnetStatePath: routeLocalnetStatePath,
 		applied: ruleSet{
-			Ports:          map[string]PortRule{},
-			ForwardSubnets: map[string]string{},
+			Ports:                map[string]PortRule{},
+			ForwardSubnets:       map[string]string{},
+			ForwardBridges:       map[string]string{},
+			RouteLocalnetBridges: previousRouteLocalnet,
 		},
 	}
 
@@ -58,35 +73,42 @@ func Watch(c metadata.Client, dc *client.Client, backend firewall.Backend, repor
 }
 
 type watcher struct {
-	c            metadata.Client
-	dc           *client.Client
-	applied      ruleSet
-	lastApplied  time.Time
-	reconcileMu  sync.Mutex
-	baseRuleMu   sync.Mutex
-	backend      firewall.Backend
-	runCommand   func(args ...string) error
-	output       func(args ...string) ([]byte, error)
-	restoreRules func(name string, args []string, data []byte) error
-	report       func(error)
-	localHost    func(metadata.Client, *client.Client) (metadata.Host, error)
+	c                      metadata.Client
+	dc                     *client.Client
+	applied                ruleSet
+	lastApplied            time.Time
+	reconcileMu            sync.Mutex
+	baseRuleMu             sync.Mutex
+	backend                firewall.Backend
+	runCommand             func(args ...string) error
+	output                 func(args ...string) ([]byte, error)
+	restoreRules           func(name string, args []string, data []byte) error
+	getRouteLocalnet       func(bridge string) (bool, error)
+	setRouteLocalnet       func(bridge string, enabled bool) error
+	routeLocalnetOriginal  map[string]bool
+	routeLocalnetStatePath string
+	report                 func(error)
+	localHost              func(metadata.Client, *client.Client) (metadata.Host, error)
 }
 
 type ruleSet struct {
-	Ports          map[string]PortRule
-	ForwardSubnets map[string]string
-	ForwardPeers   map[string][]string
+	Ports                map[string]PortRule
+	ForwardSubnets       map[string]string
+	ForwardBridges       map[string]string
+	ForwardPeers         map[string][]string
+	RouteLocalnetBridges map[string]bool
 }
 
 // PortRule is used to store the needed information for building a
 // iptables rule
 type PortRule struct {
-	Bridge     string
-	SourceIP   string
-	SourcePort string
-	TargetIP   string
-	TargetPort string
-	Protocol   string
+	Bridge         string
+	SourceIP       string
+	SourcePort     string
+	TargetIP       string
+	TargetPort     string
+	Protocol       string
+	MasqueradeDNAT bool
 }
 
 func (p PortRule) prefix() []byte {
@@ -144,6 +166,19 @@ func (p PortRule) iptables() []byte {
 	buf.WriteString(fmt.Sprintf("\n-A %s -s %v -d %v -p %v -m %v --dport %v -j MASQUERADE",
 		hostPortsPostRoutingChain, p.TargetIP, p.TargetIP, p.Protocol, p.Protocol, p.TargetPort))
 
+	// Locally originated traffic has no ingress bridge and must not reach a
+	// workload with a loopback or host source address. A flat L2 workload has
+	// an external default gateway, so every owned DNAT flow must instead return
+	// through this host's conntrack entry. Keep both rules scoped to this exact
+	// published target; unrelated forwarding and DNAT rules remain untouched.
+	if p.MasqueradeDNAT {
+		buf.WriteString(fmt.Sprintf("\n-A %s -m conntrack --ctstate DNAT -d %v -p %v -m %v --dport %v -j MASQUERADE",
+			hostPortsPostRoutingChain, p.TargetIP, p.Protocol, p.Protocol, p.TargetPort))
+	} else {
+		buf.WriteString(fmt.Sprintf("\n-A %s -m conntrack --ctstate DNAT -m addrtype --src-type LOCAL -d %v -p %v -m %v --dport %v -j MASQUERADE",
+			hostPortsPostRoutingChain, p.TargetIP, p.Protocol, p.Protocol, p.TargetPort))
+	}
+
 	return buf.Bytes()
 }
 
@@ -156,6 +191,11 @@ func (w *watcher) insertBaseRules() error {
 		return fmt.Errorf("hostports iptables command is not configured")
 	}
 	var errs []string
+	if w.run(iptables, "-w", "-t", "raw", "-C", "PREROUTING", "-j", hostPortsRawChain) != nil {
+		if err := w.run(iptables, "-w", "-t", "raw", "-I", "PREROUTING", "1", "-j", hostPortsRawChain); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
 	if w.run(iptables, "-w", "-t", "nat", "-C", "PREROUTING", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_PREROUTING") != nil {
 		if err := w.run(iptables, "-w", "-t", "nat", "-I", "PREROUTING", "-m", "addrtype", "--dst-type", "LOCAL", "-j", "CATTLE_PREROUTING"); err != nil {
 			errs = append(errs, err.Error())
@@ -294,8 +334,10 @@ func (w *watcher) reportLocked(err error) {
 func (w *watcher) onChangeLocked(version string, force bool) error {
 	logrus.Debug("Creating rule set")
 	newRules := ruleSet{
-		Ports:          map[string]PortRule{},
-		ForwardSubnets: map[string]string{},
+		Ports:                map[string]PortRule{},
+		ForwardSubnets:       map[string]string{},
+		ForwardBridges:       map[string]string{},
+		RouteLocalnetBridges: map[string]bool{},
 	}
 
 	resolveHost := w.localHost
@@ -314,12 +356,20 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 	var peerHosts []metadata.Host
 	peersLoaded := false
 	for uuid, network := range networks {
-		if subnet := forwardSubnetForNetwork(network); subnet != "" {
+		bridgeConfig, err := bridgeConfigForNetwork(network)
+		if err != nil {
+			return fmt.Errorf("network %s bridge configuration: %w", uuid, err)
+		}
+		if subnet := bridgeConfig.Subnet; subnet != "" {
+			if bridgeConfig.Bridge == "" {
+				return fmt.Errorf("network %s has a forward subnet but no managed bridge", uuid)
+			}
 			resolved, err := hostlabel.Resolve(subnet, host.Labels)
 			if err != nil {
 				return fmt.Errorf("network %s hostport subnet: %w", uuid, err)
 			}
 			newRules.ForwardSubnets[uuid] = resolved
+			newRules.ForwardBridges[uuid] = bridgeConfig.Bridge
 			if hostlabel.IsReference(subnet) {
 				if newRules.ForwardPeers == nil {
 					newRules.ForwardPeers = map[string][]string{}
@@ -347,6 +397,7 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 	for _, container := range containers {
 		network := networks[container.NetworkUUID]
 		bridge := ""
+		masqueradeDNAT := false
 
 		if container.State != "running" && container.State != "starting" {
 			continue
@@ -358,16 +409,11 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 			continue
 		}
 
-		conf, _ := network.Metadata["cniConfig"].(map[string]interface{})
-		for _, file := range conf {
-			props, _ := file.(map[string]interface{})
-			cniType, _ := props["type"].(string)
-			checkBridge, _ := props["bridge"].(string)
-
-			if isBridgeCNIType(cniType) && checkBridge != "" {
-				bridge = checkBridge
-			}
+		bridgeConfig, err := bridgeConfigForNetwork(network)
+		if err != nil {
+			return fmt.Errorf("network %s bridge configuration: %w", container.NetworkUUID, err)
 		}
+		bridge, masqueradeDNAT = bridgeConfig.Bridge, bridgeConfig.ExternalGateway
 
 		for _, port := range container.Ports {
 			rule, ok := parsePortRule(bridge, host.AgentIP, container.PrimaryIp, port)
@@ -375,7 +421,12 @@ func (w *watcher) onChangeLocked(version string, force bool) error {
 				return fmt.Errorf("invalid host port definition for container %s (%s): %q", container.Name, container.ExternalId, port)
 			}
 
+			rule.MasqueradeDNAT = masqueradeDNAT
 			newRules.Ports[container.ExternalId+"/"+port] = rule
+			address, _ := netip.ParseAddr(rule.SourceIP)
+			if rule.Bridge != "" && (rule.SourceIP == "0.0.0.0" || address.IsLoopback()) {
+				newRules.RouteLocalnetBridges[rule.Bridge] = true
+			}
 		}
 	}
 
@@ -405,6 +456,14 @@ func (w *watcher) apply(rules ruleSet) error {
 	}
 
 	buf := &bytes.Buffer{}
+	buf.WriteString("*raw\n")
+	buf.WriteString(fmt.Sprintf(":%s -\n", hostPortsRawChain))
+	buf.WriteString(fmt.Sprintf("-F %s\n", hostPortsRawChain))
+	for _, bridge := range sortedEnabledBridges(rules.RouteLocalnetBridges) {
+		buf.WriteString(fmt.Sprintf("-A %s -i %s -d 127.0.0.0/8 -j DROP\n", hostPortsRawChain, bridge))
+	}
+	buf.WriteString("COMMIT\n\n")
+
 	// NOTE: We don't use CATTLE_POSTROUTING, but for migration we just wipe it out
 	buf.WriteString("*nat\n")
 	buf.WriteString(":CATTLE_PREROUTING -\n")
@@ -427,11 +486,12 @@ func (w *watcher) apply(rules ruleSet) error {
 
 	buf.WriteString("\nCOMMIT\n\n*filter\n:CATTLE_FORWARD -\n")
 	buf.WriteString("-F CATTLE_FORWARD\n")
-	for _, subnet := range sortedForwardSubnets(rules.ForwardSubnets) {
-		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -s %s -d %s -j ACCEPT\n", subnet, subnet))
+	for _, network := range sortedForwardNetworks(rules) {
+		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -i %s -s %s -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT\n", network.Bridge, network.Subnet))
+		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -o %s -d %s -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n", network.Bridge, network.Subnet))
 	}
 	for _, pair := range sortedForwardPeers(rules) {
-		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -s %s -d %s -j ACCEPT\n", pair.Peer, pair.Local))
+		buf.WriteString(fmt.Sprintf("-A CATTLE_FORWARD -o %s -s %s -d %s -j ACCEPT\n", pair.Bridge, pair.Peer, pair.Local))
 	}
 	// A nat-table MARK is evaluated only for the first packet of a conntracked
 	// flow. In particular, subsequent VXLAN UDP datagrams can reach Docker's
@@ -455,12 +515,18 @@ func (w *watcher) apply(rules ruleSet) error {
 	if err := w.restore(w.backend.Restore, []string{"--test", "-n"}, buf.Bytes()); err != nil {
 		return fmt.Errorf("validate hostport rules: %w", err)
 	}
+	if err := w.restoreRemovedRouteLocalnet(rules); err != nil {
+		return err
+	}
 	if err := w.restore(w.backend.Restore, []string{"-n"}, buf.Bytes()); err != nil {
 		return fmt.Errorf("apply hostport rules: %w", err)
 	}
 
 	if err := w.insertBaseRules(); err != nil {
 		return fmt.Errorf("apply port base iptables rules: %w", err)
+	}
+	if err := w.activateRouteLocalnet(rules); err != nil {
+		return err
 	}
 
 	w.applied = rules
@@ -485,15 +551,27 @@ func validateRuleSet(rules ruleSet) error {
 			return err
 		}
 	}
-	for _, subnet := range rules.ForwardSubnets {
+	for uuid, subnet := range rules.ForwardSubnets {
 		prefix, err := netip.ParsePrefix(subnet)
 		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
 			return fmt.Errorf("invalid IPv4 forward subnet %q", subnet)
+		}
+		bridge := rules.ForwardBridges[uuid]
+		if err := validateBridgeName(bridge); err != nil {
+			return fmt.Errorf("forward network %s: %w", uuid, err)
+		}
+	}
+	for uuid := range rules.ForwardBridges {
+		if rules.ForwardSubnets[uuid] == "" {
+			return fmt.Errorf("forward bridge network %s has no local subnet", uuid)
 		}
 	}
 	for uuid, peers := range rules.ForwardPeers {
 		if rules.ForwardSubnets[uuid] == "" {
 			return fmt.Errorf("forward peer network %s has no local subnet", uuid)
+		}
+		if rules.ForwardBridges[uuid] == "" {
+			return fmt.Errorf("forward peer network %s has no managed bridge", uuid)
 		}
 		for _, peer := range peers {
 			prefix, err := netip.ParsePrefix(peer)
@@ -502,18 +580,18 @@ func validateRuleSet(rules ruleSet) error {
 			}
 		}
 	}
+	for bridge := range rules.RouteLocalnetBridges {
+		if err := validateBridgeName(bridge); err != nil {
+			return fmt.Errorf("route_localnet: %w", err)
+		}
+	}
 	return nil
 }
 
 func validatePortRule(rule PortRule) error {
 	if rule.Bridge != "" {
-		if len(rule.Bridge) > 15 {
-			return fmt.Errorf("invalid bridge name %q", rule.Bridge)
-		}
-		for _, char := range rule.Bridge {
-			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.') {
-				return fmt.Errorf("invalid bridge name %q", rule.Bridge)
-			}
+		if err := validateBridgeName(rule.Bridge); err != nil {
+			return err
 		}
 	}
 	for _, address := range []string{rule.SourceIP, rule.TargetIP} {
@@ -524,6 +602,18 @@ func validatePortRule(rule PortRule) error {
 	}
 	if !validPort(rule.SourcePort) || !validPort(rule.TargetPort) || (rule.Protocol != "tcp" && rule.Protocol != "udp") {
 		return fmt.Errorf("invalid hostport protocol or port")
+	}
+	return nil
+}
+
+func validateBridgeName(bridge string) error {
+	if bridge == "" || len(bridge) > 15 {
+		return fmt.Errorf("invalid bridge name %q", bridge)
+	}
+	for _, char := range bridge {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.') {
+			return fmt.Errorf("invalid bridge name %q", bridge)
+		}
 	}
 	return nil
 }
@@ -565,40 +655,84 @@ func validPort(port string) bool {
 	return err == nil && n > 0 && n <= 65535
 }
 
-func forwardSubnetForNetwork(network metadata.Network) string {
+type bridgeNetworkConfig struct {
+	Bridge          string
+	Subnet          string
+	ExternalGateway bool
+}
+
+func bridgeConfigForNetwork(network metadata.Network) (bridgeNetworkConfig, error) {
 	conf, _ := network.Metadata["cniConfig"].(map[string]interface{})
-	for _, file := range conf {
+	keys := make([]string, 0, len(conf))
+	for key := range conf {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	var result bridgeNetworkConfig
+	resultKey := ""
+	found := false
+	for _, key := range keys {
+		file := conf[key]
 		props, _ := file.(map[string]interface{})
 		cniType, _ := props["type"].(string)
+		if !isBridgeCNIType(cniType) {
+			continue
+		}
+		bridge, _ := props["bridge"].(string)
 		bridgeSubnet, _ := props["bridgeSubnet"].(string)
-
-		if isBridgeCNIType(cniType) && bridgeSubnet != "" {
-			return bridgeSubnet
+		externalGateway, _ := props["skipBridgeConfigureIP"].(bool)
+		candidate := bridgeNetworkConfig{Bridge: bridge, Subnet: bridgeSubnet, ExternalGateway: externalGateway}
+		if !found {
+			result = candidate
+			resultKey = key
+			found = true
+			continue
+		}
+		if candidate != result {
+			return bridgeNetworkConfig{}, fmt.Errorf("conflicting managed bridge entries %q and %q", resultKey, key)
 		}
 	}
+	return result, nil
+}
 
-	return ""
+func forwardSubnetForNetwork(network metadata.Network) string {
+	config, _ := bridgeConfigForNetwork(network)
+	return config.Subnet
+}
+
+func hostportBridgeForNetwork(network metadata.Network) (string, bool) {
+	config, _ := bridgeConfigForNetwork(network)
+	return config.Bridge, config.ExternalGateway
 }
 
 func isBridgeCNIType(cniType string) bool {
 	return cniType == "pasture-bridge" || cniType == "rancher-bridge"
 }
 
-func sortedForwardSubnets(subnetsByNetwork map[string]string) []string {
+type forwardNetwork struct{ UUID, Bridge, Subnet string }
+
+func sortedForwardNetworks(rules ruleSet) []forwardNetwork {
+	keys := make([]string, 0, len(rules.ForwardSubnets))
+	for key := range rules.ForwardSubnets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 	seen := map[string]bool{}
-	subnets := []string{}
-	for _, subnet := range subnetsByNetwork {
-		if subnet == "" || seen[subnet] {
+	result := []forwardNetwork{}
+	for _, key := range keys {
+		network := forwardNetwork{UUID: key, Bridge: rules.ForwardBridges[key], Subnet: rules.ForwardSubnets[key]}
+		identity := network.Bridge + "\x00" + network.Subnet
+		if network.Bridge == "" || network.Subnet == "" || seen[identity] {
 			continue
 		}
-		seen[subnet] = true
-		subnets = append(subnets, subnet)
+		seen[identity] = true
+		result = append(result, network)
 	}
-	sort.Strings(subnets)
-	return subnets
+	return result
 }
 
-type forwardPair struct{ Peer, Local string }
+type forwardPair struct{ Peer, Local, Bridge string }
 
 func sortedForwardPeers(rules ruleSet) []forwardPair {
 	keys := make([]string, 0, len(rules.ForwardPeers))
@@ -611,7 +745,7 @@ func sortedForwardPeers(rules ruleSet) []forwardPair {
 		peers := append([]string(nil), rules.ForwardPeers[key]...)
 		sort.Strings(peers)
 		for _, peer := range peers {
-			pairs = append(pairs, forwardPair{Peer: peer, Local: rules.ForwardSubnets[key]})
+			pairs = append(pairs, forwardPair{Peer: peer, Local: rules.ForwardSubnets[key], Bridge: rules.ForwardBridges[key]})
 		}
 	}
 	return pairs
@@ -636,8 +770,7 @@ func setupKernelParameters() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		logrus.Errorf("error setting up kernel parameters")
-		return err
+		return fmt.Errorf("set net.bridge.bridge-nf-call-iptables: %w", err)
 	}
 	return nil
 }

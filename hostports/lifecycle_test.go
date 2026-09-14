@@ -25,7 +25,9 @@ func emptyHostportWatcher() *watcher {
 		localHost: func(metadata.Client, *client.Client) (metadata.Host, error) {
 			return metadata.Host{UUID: "host-1"}, nil
 		},
-		applied:     ruleSet{Ports: map[string]PortRule{}, ForwardSubnets: map[string]string{}},
+		applied: ruleSet{
+			Ports: map[string]PortRule{}, ForwardSubnets: map[string]string{}, ForwardBridges: map[string]string{}, RouteLocalnetBridges: map[string]bool{},
+		},
 		lastApplied: time.Now(),
 	}
 }
@@ -44,6 +46,7 @@ func TestNoPerHostNetworkDoesNotReapplyUnchangedFirewall(t *testing.T) {
 
 const intactEmptyNFT = `{"nftables":[
  {"table":{"family":"ip","name":"pasturestack_hostports"}},
+ {"chain":{"family":"ip","table":"pasturestack_hostports","name":"raw_prerouting","type":"filter","hook":"prerouting","prio":-300,"policy":"accept"}},
  {"chain":{"family":"ip","table":"pasturestack_hostports","name":"prerouting","type":"nat","hook":"prerouting","prio":-101,"policy":"accept"}},
  {"chain":{"family":"ip","table":"pasturestack_hostports","name":"output","type":"nat","hook":"output","prio":-101,"policy":"accept"}},
  {"chain":{"family":"ip","table":"pasturestack_hostports","name":"postrouting","type":"nat","hook":"postrouting","prio":99,"policy":"accept"}},
