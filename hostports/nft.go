@@ -53,7 +53,7 @@ func (w *watcher) checkNFTRules() error {
 		ruleCount["postrouting"]++
 		ruleCount["postrouting"]++
 	}
-	ruleCount["forward"] = 2 + 2*len(sortedForwardNetworks(w.applied)) + len(sortedForwardPeers(w.applied)) + len(w.applied.Ports)
+	ruleCount["forward"] = 2 + 2*len(sortedForwardNetworks(w.applied)) + len(sortedSharedIngressNetworks(w.applied)) + len(sortedForwardPeers(w.applied)) + len(w.applied.Ports)
 	seen := map[string]bool{}
 	actualRules := map[string]int{}
 	for _, item := range listing.NFTables {
@@ -181,6 +181,9 @@ func nftHostportBatch(rules ruleSet, existing bool) []byte {
 	for _, network := range sortedForwardNetworks(rules) {
 		fmt.Fprintf(buf, "  iifname %q ip saddr %s ct state new,established,related meta mark set meta mark | 0x1068 accept\n", network.Bridge, network.Subnet)
 		fmt.Fprintf(buf, "  oifname %q ip daddr %s ct state established,related meta mark set meta mark | 0x1068 accept\n", network.Bridge, network.Subnet)
+	}
+	for _, network := range sortedSharedIngressNetworks(rules) {
+		fmt.Fprintf(buf, "  oifname %q ip saddr %s ip daddr %s ct state new,established,related meta mark set meta mark | 0x1068 accept\n", network.Bridge, network.Subnet, network.Subnet)
 	}
 	for _, pair := range sortedForwardPeers(rules) {
 		fmt.Fprintf(buf, "  oifname %q ip saddr %s ip daddr %s meta mark set meta mark | 0x1068 accept\n", pair.Bridge, pair.Peer, pair.Local)

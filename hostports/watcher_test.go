@@ -32,6 +32,25 @@ func TestForwardSubnetSupportsPastureBridge(t *testing.T) {
 	}
 }
 
+func TestSharedIngressDefaultsFromLegacyHostNatAndCanBeDisabled(t *testing.T) {
+	legacy := metadata.Network{Metadata: map[string]interface{}{"cniConfig": map[string]interface{}{
+		"10-overlay.conf": map[string]interface{}{
+			"type": "pasture-bridge", "bridge": "cattle0", "bridgeSubnet": "10.42.0.0/16", "hostNat": true,
+		},
+	}}}
+	config, err := bridgeConfigForNetwork(legacy)
+	if err != nil || !config.SharedIngress {
+		t.Fatalf("legacy shared overlay config = %#v, %v", config, err)
+	}
+
+	disabled := legacy.Metadata["cniConfig"].(map[string]interface{})["10-overlay.conf"].(map[string]interface{})
+	disabled["allowSharedSubnetIngress"] = false
+	config, err = bridgeConfigForNetwork(legacy)
+	if err != nil || config.SharedIngress {
+		t.Fatalf("explicitly disabled shared ingress config = %#v, %v", config, err)
+	}
+}
+
 func TestFlatBridgeUsesOwnedDNATMasquerade(t *testing.T) {
 	flat := metadata.Network{Metadata: map[string]interface{}{
 		"cniConfig": map[string]interface{}{
@@ -219,6 +238,7 @@ func testRuleSet() ruleSet {
 		},
 		ForwardSubnets:       map[string]string{"network": "10.42.0.0/16"},
 		ForwardBridges:       map[string]string{"network": "cattle0"},
+		SharedIngress:        map[string]bool{"network": true},
 		RouteLocalnetBridges: map[string]bool{"cattle0": true},
 	}
 }
@@ -259,7 +279,7 @@ func TestPublishedUDPDNATIsAcceptedForWholeFlow(t *testing.T) {
 	}
 }
 
-func TestManagedSubnetAllowsOutboundAndEstablishedReturnOnly(t *testing.T) {
+func TestManagedSharedSubnetAllowsBidirectionalOverlayTraffic(t *testing.T) {
 	rules := testRuleSet()
 	var iptablesRules string
 	w := &watcher{
@@ -277,18 +297,20 @@ func TestManagedSubnetAllowsOutboundAndEstablishedReturnOnly(t *testing.T) {
 	for _, want := range []string{
 		"-A CATTLE_FORWARD -i cattle0 -s 10.42.0.0/16 -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT",
 		"-A CATTLE_FORWARD -o cattle0 -d 10.42.0.0/16 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+		"-A CATTLE_FORWARD -o cattle0 -s 10.42.0.0/16 -d 10.42.0.0/16 -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT",
 	} {
 		if !strings.Contains(iptablesRules, want) {
 			t.Fatalf("iptables rules missing %q", want)
 		}
 	}
-	if strings.Contains(iptablesRules, "-d 10.42.0.0/16 -m conntrack --ctstate NEW") {
-		t.Fatal("unsolicited inbound traffic was allowed")
+	if strings.Contains(iptablesRules, "-o cattle0 -s 0.0.0.0/0") {
+		t.Fatal("shared ingress was not bounded to the managed source subnet")
 	}
 	nftRules := string(nftHostportBatch(rules, false))
 	for _, want := range []string{
 		"iifname \"cattle0\" ip saddr 10.42.0.0/16 ct state new,established,related meta mark set meta mark | 0x1068 accept",
 		"oifname \"cattle0\" ip daddr 10.42.0.0/16 ct state established,related meta mark set meta mark | 0x1068 accept",
+		"oifname \"cattle0\" ip saddr 10.42.0.0/16 ip daddr 10.42.0.0/16 ct state new,established,related meta mark set meta mark | 0x1068 accept",
 	} {
 		if !strings.Contains(nftRules, want) {
 			t.Fatalf("nft rules missing %q", want)
