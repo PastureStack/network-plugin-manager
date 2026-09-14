@@ -27,7 +27,9 @@ func TestMalformedEligibleHostPortFailsReconcileWithoutApplying(t *testing.T) {
 		localHost: func(metadata.Client, *client.Client) (metadata.Host, error) {
 			return metadata.Host{UUID: "host-1", AgentIP: "192.0.2.10"}, nil
 		},
-		applied: ruleSet{Ports: map[string]PortRule{}, ForwardSubnets: map[string]string{}},
+		applied: ruleSet{
+			Ports: map[string]PortRule{}, ForwardSubnets: map[string]string{}, ForwardBridges: map[string]string{}, RouteLocalnetBridges: map[string]bool{},
+		},
 	}
 	err := w.onChange("test")
 	if err == nil || !strings.Contains(err.Error(), "invalid host port definition") {

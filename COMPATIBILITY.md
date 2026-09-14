@@ -85,10 +85,13 @@ host-wide accept rule or change Docker's default FORWARD policy.
 Each managed bridge subnet may initiate forwarding, while traffic returning
 to it is accepted only in `ESTABLISHED` or `RELATED` conntrack states.
 Unsolicited traffic whose destination is a managed subnet is not admitted by
-this rule. Native nftables applies Docker's configured bridge-accept mark on
-both directions; the two iptables frontends use only the selected
+this rule. Both directions are matched against the exact validated CNI bridge
+and subnet pair; missing or conflicting bridge metadata fails before any
+firewall change. Native nftables applies Docker's configured bridge-accept
+mark on both directions; the two iptables frontends use only the selected
 `CATTLE_FORWARD` chain. This bounded rule is what permits current Docker
-filters to carry Metadata, DNS, and normal workload egress.
+filters to carry Metadata, DNS, and normal workload egress without trusting a
+spoofed managed prefix arriving on another host interface.
 
 For a CNI bridge marked `skipBridgeConfigureIP`, the workload uses an
 external Layer 2 gateway. The manager therefore masquerades only its own DNAT
@@ -96,5 +99,10 @@ flows to an exact published address, protocol, and port, preventing replies
 from bypassing the publishing host. Other bridge networks preserve source
 addresses; only locally originated host-port traffic is masqueraded. When a
 host port accepts loopback traffic, `route_localnet` is enabled only on that
-specific managed bridge and is rechecked during reconciliation. No global
-`route_localnet`, forwarding policy, or third-party NAT rule is changed.
+specific managed bridge and is rechecked during reconciliation. Before that
+sysctl is enabled, the selected backend must validate and install a
+bridge-scoped raw-prerouting drop for `127.0.0.0/8`. The manager records the
+original per-bridge value in host-mounted runtime state and restores it before
+removing the last guard. Failed preflight or firewall application never opens
+the sysctl. No global `route_localnet`, forwarding policy, or third-party NAT
+rule is changed.

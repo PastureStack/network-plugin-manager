@@ -74,7 +74,9 @@ func TestNativeNFTLifecycleInUnsharedVMNamespace(t *testing.T) {
 		localHost: func(metadata.Client, *client.Client) (metadata.Host, error) {
 			return metadata.Host{UUID: "test-host", AgentIP: "198.51.100.2"}, nil
 		},
-		applied: ruleSet{Ports: map[string]PortRule{}, ForwardSubnets: map[string]string{}},
+		applied: ruleSet{
+			Ports: map[string]PortRule{}, ForwardSubnets: map[string]string{}, ForwardBridges: map[string]string{}, RouteLocalnetBridges: map[string]bool{},
+		},
 	}
 	if err := w.onChange("initial"); err != nil {
 		t.Fatalf("initial production nft apply: %v", err)

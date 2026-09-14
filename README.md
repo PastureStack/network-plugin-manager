@@ -72,11 +72,18 @@ The current release is `v0.8.19`. Managed bridge subnets can initiate
 outbound traffic and receive only established or related replies; this keeps
 Metadata and DNS reachable behind current Docker bridge filters without
 opening unsolicited inbound forwarding or changing the host's global policy.
+Every forwarding exception is bound to the exact validated CNI bridge and
+subnet pair; missing or conflicting bridge metadata fails before any firewall
+change. This prevents traffic arriving on an unrelated host interface from
+claiming a managed source prefix.
 Host ports on a flat L2 network receive target-scoped DNAT masquerading so
 replies return through the publishing host even when workloads use an
 external gateway. Loopback host-port access enables `route_localnet` only on
-the exact managed bridge that needs it. Overlay host ports retain client
-source addresses except for locally originated access. Obtain the immutable
+the exact managed bridge that needs it, after a bridge-scoped raw-prerouting
+drop for `127.0.0.0/8` is live. The original per-bridge value is recorded on
+the host-mounted runtime state and restored before the final guard is removed.
+Overlay host ports retain client source addresses except for locally
+originated access. Obtain the immutable
 image identity from the release's checksum-covered
 [`published.txt`](https://github.com/PastureStack/network-plugin-manager/releases/latest/download/published.txt)
 rather than copying an older release digest.

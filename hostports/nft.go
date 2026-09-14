@@ -35,12 +35,14 @@ func (w *watcher) checkNFTRules() error {
 		Policy string `json:"policy"`
 	}
 	expected := map[string]chain{
-		"prerouting":  {Type: "nat", Hook: "prerouting", Prio: -101, Policy: "accept"},
-		"output":      {Type: "nat", Hook: "output", Prio: -101, Policy: "accept"},
-		"postrouting": {Type: "nat", Hook: "postrouting", Prio: 99, Policy: "accept"},
-		"forward":     {Type: "filter", Hook: "forward", Prio: -1, Policy: "accept"},
+		"raw_prerouting": {Type: "filter", Hook: "prerouting", Prio: -300, Policy: "accept"},
+		"prerouting":     {Type: "nat", Hook: "prerouting", Prio: -101, Policy: "accept"},
+		"output":         {Type: "nat", Hook: "output", Prio: -101, Policy: "accept"},
+		"postrouting":    {Type: "nat", Hook: "postrouting", Prio: 99, Policy: "accept"},
+		"forward":        {Type: "filter", Hook: "forward", Prio: -1, Policy: "accept"},
 	}
 	ruleCount := map[string]int{}
+	ruleCount["raw_prerouting"] = len(sortedEnabledBridges(w.applied.RouteLocalnetBridges))
 	for _, p := range w.applied.Ports {
 		ruleCount["prerouting"]++
 		if p.Bridge != "" {
@@ -51,7 +53,7 @@ func (w *watcher) checkNFTRules() error {
 		ruleCount["postrouting"]++
 		ruleCount["postrouting"]++
 	}
-	ruleCount["forward"] = 2 + 2*len(sortedForwardSubnets(w.applied.ForwardSubnets)) + len(sortedForwardPeers(w.applied)) + len(w.applied.Ports)
+	ruleCount["forward"] = 2 + 2*len(sortedForwardNetworks(w.applied)) + len(sortedForwardPeers(w.applied)) + len(w.applied.Ports)
 	seen := map[string]bool{}
 	actualRules := map[string]int{}
 	for _, item := range listing.NFTables {
@@ -110,8 +112,14 @@ func (w *watcher) applyNFT(rules ruleSet) error {
 	if err := w.restore("nft", []string{"-c", "-f", "-"}, batch); err != nil {
 		return fmt.Errorf("validate native nft hostport batch: %w", err)
 	}
+	if err := w.restoreRemovedRouteLocalnet(rules); err != nil {
+		return err
+	}
 	if err := w.restore("nft", []string{"-f", "-"}, batch); err != nil {
 		return fmt.Errorf("apply native nft hostport batch: %w", err)
+	}
+	if err := w.activateRouteLocalnet(rules); err != nil {
+		return err
 	}
 	w.applied = rules
 	w.lastApplied = time.Now()
@@ -124,6 +132,11 @@ func nftHostportBatch(rules ruleSet, existing bool) []byte {
 		fmt.Fprintf(buf, "delete table ip %s\n", nftHostportsTable)
 	}
 	fmt.Fprintf(buf, "table ip %s {\n", nftHostportsTable)
+	buf.WriteString(" chain raw_prerouting {\n  type filter hook prerouting priority -300; policy accept;\n")
+	for _, bridge := range sortedEnabledBridges(rules.RouteLocalnetBridges) {
+		fmt.Fprintf(buf, "  iifname %q ip daddr 127.0.0.0/8 drop\n", bridge)
+	}
+	buf.WriteString(" }\n")
 	buf.WriteString(" chain prerouting {\n  type nat hook prerouting priority -101; policy accept;\n")
 	keys := make([]string, 0, len(rules.Ports))
 	for key := range rules.Ports {
@@ -165,12 +178,12 @@ func nftHostportBatch(rules ruleSet, existing bool) []byte {
 		}
 	}
 	buf.WriteString(" }\n chain forward {\n  type filter hook forward priority -1; policy accept;\n")
-	for _, subnet := range sortedForwardSubnets(rules.ForwardSubnets) {
-		fmt.Fprintf(buf, "  ip saddr %s ct state new,established,related meta mark set meta mark | 0x1068 accept\n", subnet)
-		fmt.Fprintf(buf, "  ip daddr %s ct state established,related meta mark set meta mark | 0x1068 accept\n", subnet)
+	for _, network := range sortedForwardNetworks(rules) {
+		fmt.Fprintf(buf, "  iifname %q ip saddr %s ct state new,established,related meta mark set meta mark | 0x1068 accept\n", network.Bridge, network.Subnet)
+		fmt.Fprintf(buf, "  oifname %q ip daddr %s ct state established,related meta mark set meta mark | 0x1068 accept\n", network.Bridge, network.Subnet)
 	}
 	for _, pair := range sortedForwardPeers(rules) {
-		fmt.Fprintf(buf, "  ip saddr %s ip daddr %s meta mark set meta mark | 0x1068 accept\n", pair.Peer, pair.Local)
+		fmt.Fprintf(buf, "  oifname %q ip saddr %s ip daddr %s meta mark set meta mark | 0x1068 accept\n", pair.Bridge, pair.Peer, pair.Local)
 	}
 	// NAT chains see only the first packet of a conntracked flow. Restore the
 	// Docker bridge-accept mark on every forwarded datagram, scoped to our
