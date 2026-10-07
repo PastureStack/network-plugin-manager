@@ -8,67 +8,12 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Runtime image
 
-The `v0.8.14` image was published with GHCR manifest digest
-`sha256:59b4bb31df28503337e9f3b8f08c18aa0dbe9749692c721fe8bdfc4cc921f263`.
-Its annotated tag resolves to signed source commit
-`98ffacd24436d42e33db721ab7026739d0edee41`. The release workflow passed
-tests, a reproducible build, Trivy source/binary/image scans, CycloneDX source
-and image SBOM checks, and asset/image provenance attestations. Image
-publication is separate from Catalog integration and the complete
-control-plane host lifecycle gate.
+The current release is `v0.8.22`. Release assets include source and image
+SBOMs, SHA256 checksums, and build provenance. Obtain the immutable image
+identity from the checksum-covered `published.txt` in the release. Catalog
+integration and real-host lifecycle checks are separate from image publication.
 
-On an isolated Ubuntu 26.04.1 / Docker 29.8 VM, a source-equivalent release
-candidate passed backend detection against Docker's native nftables,
-iptables-nft, and iptables-legacy modes, rejected mismatched explicit choices
-without changing rules, and passed a Docker restart check and a legacy-mode
-host reboot check. This does not establish multi-host rollout or existing-stack
-upgrade safety.
-
-The `v0.8.15` image was published with GHCR manifest digest
-`sha256:622cfb38a58f204d23152205e6d850d204d1cb9d3c50392a935afee49d780e3e`.
-Its annotated tag resolves to signed source commit
-`26eee48df2e3bac96fc97fcd596a16deccc9f4ad`. The release workflow passed
-its build, security, checksum, SBOM, and provenance gates. This release moves
-same-subnet NAT exclusion into the manager's xtables rules, matching native
-nftables ownership. The isolated VM applied, reapplied, inspected, and removed
-candidate host NAT and host-port rules under Docker's iptables-nft and
-iptables-legacy frontends. Image publication and isolated-VM tests do not by
-themselves establish a managed-service or multi-host rollout.
-
-The `v0.8.16` image was published with GHCR manifest digest
-`sha256:a042c582689561b43349fa83ed92269e849038be3b7a2342e8a9ef0149460f92`.
-The `v0.8.17` image was published with GHCR manifest digest
-`sha256:f13654b27b71f3fbddbcf33272c10b342d513dd402a255bdda1f341cfbe908f8`.
-Its signed tag resolves to verified source commit
-`e29dd5cefa373140d76e3a21da9bd95a3bec97e3`; the release workflow passed
-tests, image scanning, checksums, SBOM, and provenance gates. This version adds
-bounded cross-host exceptions for the per-host-subnet
-network: only active hosts with distinct, valid subnet labels are peers. Their
-traffic retains its container source IP and is marked before Docker's native
-nft bridge filter. An active host with a missing or overlapping label fails
-closed; an inactive registration does not block live peers. Network Plugin
-Manager owns these NAT and forwarding rules, not the CNI driver or an ad-hoc
-host firewall script.
-
-On two isolated Ubuntu 26.04.1 / Docker 29.8 QA hosts, a source-equivalent
-`v0.8.17` candidate passed bidirectional container ping and TCP 42, service
-DNS, public HTTPS egress, and host port 32792 after Docker restarts and host
-reboots. The second host was also explicitly switched to `iptables-nft`, then
-`iptables-legacy`, with the same cross-host checks passing in each mode. It was
-restored to native nft afterward. The official `v0.8.17` image was then used on
-both native-nft hosts with the official IPsec/VXLAN `v0.14.34` image; manager
-health, bidirectional TCP 42, Metadata HTTP 200, public HTTPS, and published
-host ports all passed. The manager follows the Docker-selected backend; it
-does not change the host's firewall preference. This bounded test
-does not establish every existing iptables or IPsec deployment's migration safety.
-
-The `v0.8.18` image was published with GHCR manifest digest
-`sha256:1f5d44de03648a771ec9e7bc448e456ef6b21a5fcd4cc51f59f99df96a804822`.
-It restores target-scoped authorization for every packet in an owned DNAT
-flow, including later UDP datagrams, without accepting unrelated Docker
-traffic.
-
-The current release is `v0.8.21`. Managed bridge subnets can initiate
+Managed bridge subnets can initiate
 outbound traffic and receive established or related replies. Shared overlay
 subnets used by IPsec and VXLAN can also receive new connections from the
 same validated subnet through the exact managed bridge. Existing templates
@@ -93,7 +38,7 @@ image identity from the release's checksum-covered
 [`published.txt`](https://github.com/PastureStack/network-plugin-manager/releases/latest/download/published.txt)
 rather than copying an older release digest.
 
-`v0.8.21` also closes two control-plane convergence gaps without moving
+The manager also closes two control-plane convergence gaps without moving
 responsibility between plugins. If Metadata temporarily omits the primary IP
 of a running container that publishes a host port, the manager reads that
 exact container's network namespace and accepts an address only when exactly
@@ -227,7 +172,7 @@ The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-v
 make test
 make validate
 bash scripts/check-build-downloads
-VERSION_OVERRIDE=v0.8.21 IMAGE_NAMESPACE=local/pasturestack make package
+VERSION_OVERRIDE=v0.8.22 IMAGE_NAMESPACE=local/pasturestack make package
 ```
 
 Pull requests and `main` run one non-publishing gate: tests, vet/format checks, govulncheck, a reproducible binary build, one runtime image build, and Trivy scans plus CycloneDX SBOMs for the source, binary, and image. All reported vulnerabilities and secrets fail the gate. Publishing remains a separate, explicitly authorized operation.
