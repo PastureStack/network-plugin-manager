@@ -111,8 +111,23 @@ reselect a same-labelled container at invocation time. Binary names are
 strictly validated, wrappers are installed atomically as regular mode-0700
 files, and content, type, or permission drift is repaired. Older drivers that
 do not yet contain a private bundle retain the existing shared-binary fallback.
-The driver still owns its CNI data plane; Network Plugin Manager continues to
-own only host NAT, forwarding, and host-port reconciliation.
+The driver still owns its CNI data plane; Network Plugin Manager owns host
+NAT, forwarding, host-port reconciliation, and materializing the CNI
+configuration supplied by Metadata.
+
+CNI configuration upgrades also reconcile the known historical IPsec file.
+When current Metadata requests `10-pasturestack.conf` with the native bridge
+and metadata IPAM contract, the manager validates and atomically writes all
+desired configs before retiring an unrequested `10-rancher.conf` whose
+network name, bridge type, and IPAM type exactly match the legacy platform
+contract. Its unchanged contents remain in
+`10-rancher.conf.pasturestack-retired`, outside the active `.conf`/`.json`
+set. Rolling back to the exact legacy Metadata contract retires the known
+native counterpart in the same way, so both configs cannot run together.
+Legacy Metadata remains supported; unrelated administrator files remain
+untouched. Malformed or ambiguous old files, symlinks, and conflicting backup
+contents fail reconciliation explicitly. This is a bounded config migration,
+not a claim that every host or firewall upgrade is safe.
 
 The current preflight inspects already loaded legacy tables using an
 independent iptables-legacy executable. Active old platform or Docker hooks

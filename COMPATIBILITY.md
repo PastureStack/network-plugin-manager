@@ -44,6 +44,22 @@ binary path remains only as a compatibility fallback for older providers.
 Wrappers are atomically installed as regular mode-0700 files; content, type,
 and permission drift causes the selected wrappers to be restored.
 
+The manager owns materializing Metadata's CNI configuration, including the
+known IPsec filename transition. Only an unrequested `10-rancher.conf` with
+the exact `rancher-cni-network` / `rancher-bridge` / `rancher-cni-ipam` contract
+is retired when the desired `10-pasturestack.conf` declares
+`pasturestack-cni-network` / `pasture-bridge` / `metadata-cni-ipam`. All desired
+files must validate and complete atomic mode-0600 writes first. Retirement
+preserves the original bytes under a `.pasturestack-retired` suffix that the
+CNI loader does not execute. An existing backup must be byte-identical;
+different contents, ambiguous ownership, malformed configs, symlinks, or
+unsafe paths fail reconciliation without retiring the old config. Rolling
+back to the exact legacy contract retires only an unrequested native file
+with its complete known contract. A config still requested by Metadata is
+never retired. Changes to `managed.d` stage a new symlink before replacing
+the old pointer. Other administrator files are preserved; no directory-wide
+cleanup or inferred ownership is used.
+
 For a host-port container whose Metadata primary IP has not converged, the
 manager may read only that running container's network namespace. The Docker
 PID must remain identical across the read, the network must already expose a

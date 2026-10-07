@@ -1,11 +1,9 @@
 package cniconf
 
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"time"
 
@@ -68,6 +66,7 @@ func (w *watcher) onChange(version string) error {
 	logrus.Debugf("localNetworks: %v", localNetworks)
 
 	forceApply := time.Now().Sub(w.lastApplied) > reapplyEvery
+	var applyErrors []error
 
 	for _, network := range networks {
 		if _, local := localNetworks[network.UUID]; !local {
@@ -81,12 +80,12 @@ func (w *watcher) onChange(version string) error {
 
 		if forceApply || !reflect.DeepEqual(w.applied[network.Name], network) {
 			if err := w.apply(network); err != nil {
-				logrus.Errorf("Failed to apply cni conf: %v", err)
+				applyErrors = append(applyErrors, fmt.Errorf("network %q: %w", network.Name, err))
 			}
 		}
 	}
 
-	return nil
+	return errors.Join(applyErrors...)
 }
 
 // localCNINetworks returns the CNI-managed networks that must be configured on
@@ -124,30 +123,30 @@ func localCNINetworks(networks []metadata.Network, services []metadata.Service, 
 }
 
 func (w *watcher) apply(network metadata.Network) error {
+	return w.applyWithWriter(network, writeConfigAtomic)
+}
+
+func (w *watcher) applyWithWriter(network metadata.Network, writeConfig func(string, []byte) error) error {
 	cniConf, _ := network.Metadata["cniConfig"].(map[string]interface{})
+	if !validConfigName(network.Name) {
+		return fmt.Errorf("invalid CNI network name %q", network.Name)
+	}
 	confDir := fmt.Sprintf(cniDir, network.Name)
-	if err := os.MkdirAll(confDir, 0700); err != nil {
+	files, err := prepareConfigFiles(confDir, cniConf)
+	if err != nil {
 		return err
 	}
-
-	var lastErr error
-	for file, config := range cniConf {
-		p := filepath.Join(confDir, file)
-		content, err := json.Marshal(config)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		out := &bytes.Buffer{}
-		if err := json.Indent(out, content, "", "  "); err != nil {
-			lastErr = err
-			continue
-		}
-
-		logrus.Debugf("Writing %s: %s", p, out)
-		if err := os.WriteFile(p, out.Bytes(), 0600); err != nil {
-			lastErr = err
+	retirement, err := prepareLegacyRetirement(confDir, files)
+	if err != nil {
+		return err
+	}
+	if err := ensureConfigDirectory(confDir); err != nil {
+		return err
+	}
+	for _, file := range files {
+		logrus.Debugf("Writing CNI config %s", file.path)
+		if err := writeConfig(file.path, file.content); err != nil {
+			return err
 		}
 	}
 
@@ -156,17 +155,20 @@ func (w *watcher) apply(network metadata.Network) error {
 		managedDirTest, err := os.Stat(managedDir)
 		configDirTest, err1 := os.Stat(confDir)
 		if !(err == nil && err1 == nil && os.SameFile(managedDirTest, configDirTest)) {
-			os.Remove(managedDir)
-			if err := os.Symlink(network.Name+".d", managedDir); err != nil {
-				lastErr = err
+			if err := replaceManagedSymlink(managedDir, network.Name+".d"); err != nil {
+				return err
 			}
 		}
 	}
 
-	if lastErr == nil {
-		w.applied[network.Name] = network
-		w.lastApplied = time.Now()
+	if err := retirement.retire(); err != nil {
+		return err
 	}
+	if retirement != nil {
+		logrus.Infof("Retired superseded platform CNI config %s; recoverable copy: %s", retirement.path, retirement.backup)
+	}
+	w.applied[network.Name] = network
+	w.lastApplied = time.Now()
 
-	return lastErr
+	return nil
 }
