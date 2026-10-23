@@ -71,6 +71,19 @@ func NewClientWithIPAndWait(rawURL, forwardedFor string) (Client, error) {
 	return client, nil
 }
 
+// NewClientAndWaitContext keeps daemon startup unready while its separately
+// managed metadata service is being replaced. Request deadlines still apply.
+func NewClientAndWaitContext(ctx context.Context, rawURL string) (Client, error) {
+	client, err := newHTTPClient(rawURL, "")
+	if err != nil {
+		return nil, err
+	}
+	if err := waitForConnectionContext(ctx, client, pauseRetry); err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
 func newHTTPClient(rawURL, forwardedFor string) (*httpClient, error) {
 	baseURL, err := url.Parse(rawURL)
 	if err != nil {
@@ -114,19 +127,34 @@ func newHTTPClient(rawURL, forwardedFor string) (*httpClient, error) {
 }
 
 func waitForConnection(client *httpClient) error {
-	deadline := time.Now().Add(connectionDeadline)
+	ctx, cancel := context.WithTimeout(context.Background(), connectionDeadline)
+	defer cancel()
+	return waitForConnectionContext(ctx, client, pauseRetry)
+}
+
+func pauseRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func waitForConnectionContext(ctx context.Context, client *httpClient, pause func(context.Context, time.Duration) error) error {
 	delay := time.Second
-	var lastErr error
 	for {
-		if _, err := client.GetVersion(); err == nil {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("metadata service did not become ready: %w", err)
+		}
+		if _, err := client.getVersionContext(ctx); err == nil {
 			return nil
-		} else {
-			lastErr = err
 		}
-		if time.Now().Add(delay).After(deadline) {
-			return fmt.Errorf("metadata service did not become ready: %w", lastErr)
+		if err := pause(ctx, delay); err != nil {
+			return fmt.Errorf("metadata service did not become ready: %w", err)
 		}
-		time.Sleep(delay)
 		if delay < 4*time.Second {
 			delay *= 2
 		}
@@ -154,11 +182,15 @@ func (client *httpClient) endpoint(path string) (*url.URL, error) {
 }
 
 func (client *httpClient) sendRequest(path string, timeout time.Duration) ([]byte, error) {
+	return client.sendRequestContext(context.Background(), path, timeout)
+}
+
+func (client *httpClient) sendRequestContext(parent context.Context, path string, timeout time.Duration) ([]byte, error) {
 	target, err := client.endpoint(path)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
@@ -204,9 +236,17 @@ func (client *httpClient) decode(path string, destination interface{}) error {
 }
 
 func (client *httpClient) GetVersion() (string, error) {
+	return client.getVersionContext(context.Background())
+}
+
+func (client *httpClient) getVersionContext(ctx context.Context) (string, error) {
 	var version string
-	if err := client.decode("/version", &version); err != nil {
+	body, err := client.sendRequestContext(ctx, "/version", requestTimeout)
+	if err != nil {
 		return "", err
+	}
+	if err := json.Unmarshal(body, &version); err != nil {
+		return "", errors.New("metadata response was not valid JSON")
 	}
 	return version, nil
 }

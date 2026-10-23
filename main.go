@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/PastureStack/network-plugin-manager/arpsync"
 	"github.com/PastureStack/network-plugin-manager/binexec"
@@ -64,12 +67,14 @@ func main() {
 		},
 		Action: run,
 	}
-	if err := app.Run(context.Background(), os.Args); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := app.Run(ctx, os.Args); err != nil && !errors.Is(err, context.Canceled) {
 		logrus.Fatal(logsafe.Value(err))
 	}
 }
 
-func run(_ context.Context, c *cli.Command) error {
+func run(ctx context.Context, c *cli.Command) error {
 	status, err := readiness.New(readiness.DefaultPath)
 	if err != nil {
 		return err
@@ -99,10 +104,8 @@ func run(_ context.Context, c *cli.Command) error {
 		return err
 	}
 
-	reaper.CheckMetadata(dClient, true)
-
 	logrus.Infof("Waiting for metadata")
-	mClient, err := metadata.NewClientAndWait(c.String("metadata-url"))
+	mClient, err := metadata.NewClientAndWaitContext(ctx, c.String("metadata-url"))
 	if err != nil {
 		return fmt.Errorf("create metadata client: %w", err)
 	}
@@ -145,6 +148,6 @@ func run(_ context.Context, c *cli.Command) error {
 		return err
 	}
 
-	<-make(chan struct{})
+	<-ctx.Done()
 	return nil
 }
