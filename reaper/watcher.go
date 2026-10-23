@@ -2,13 +2,9 @@ package reaper
 
 import (
 	"context"
-	"fmt"
-	"time"
 
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
-	"github.com/containerd/errdefs"
-	"github.com/jpillora/backoff"
 	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
 )
@@ -18,8 +14,6 @@ var (
 	serviceNameLabel = "io.rancher.stack_service.name"
 	metadataService  = "network-services/metadata"
 	dnsService       = "network-services/metadata/dns"
-
-	recheckEvery = 5 * time.Minute
 )
 
 func Watch(dockerClient *client.Client, c metadata.Client) error {
@@ -28,23 +22,7 @@ func Watch(dockerClient *client.Client, c metadata.Client) error {
 		c:  c,
 	}
 	go c.OnChange(5, w.onChangeNoError)
-	go watchMetadata(dockerClient)
 	return nil
-}
-
-func watchMetadata(dockerClient *client.Client) {
-	b := &backoff.Backoff{
-		Min:    1 * time.Second,
-		Max:    5 * time.Minute,
-		Factor: 1.5,
-	}
-	for {
-		err := CheckMetadata(dockerClient, false)
-		if err != nil {
-			logrus.Errorf("Failed to check for bad metadata: %v", err)
-		}
-		time.Sleep(b.Duration())
-	}
 }
 
 type watcher struct {
@@ -69,8 +47,13 @@ func (w *watcher) onChange(version string) error {
 		return err
 	}
 
+	w.removeUnmanaged(containers, host.UUID)
+	return nil
+}
+
+func (w *watcher) removeUnmanaged(containers []metadata.Container, hostUUID string) {
 	for _, container := range containers {
-		if container.HostUUID != host.UUID {
+		if container.HostUUID != hostUUID || managedDependency(container) {
 			continue
 		}
 		uuid, ok := container.Labels[uuidLabel]
@@ -82,63 +65,18 @@ func (w *watcher) onChange(version string) error {
 			w.removeContainer(container)
 		}
 	}
-
-	return nil
 }
 
-func CheckMetadata(dockerClient *client.Client, first bool) error {
-	result, err := dockerClient.ContainerList(context.Background(), client.ContainerListOptions{
-		All: true,
-	})
-	if err != nil {
-		return err
+// Metadata and DNS are dependencies owned by the orchestration lifecycle, not
+// this plugin. Old/new instances and temporarily missing network namespaces are
+// valid during replacement; only the owner can decide when to remove them.
+func managedDependency(container metadata.Container) bool {
+	name := container.Labels[serviceNameLabel]
+	if name == metadataService || name == dnsService {
+		return true
 	}
-
-	metadataIds := []string{}
-	dnsIds := []string{}
-	for _, summary := range result.Items {
-		if summary.Labels[uuidLabel] != "" && summary.Labels[serviceNameLabel] == metadataService {
-			metadataIds = append(metadataIds, summary.ID)
-		}
-		if summary.Labels[uuidLabel] != "" && summary.Labels[serviceNameLabel] == dnsService {
-			dnsIds = append(dnsIds, summary.ID)
-		}
-	}
-
-	toDelete := []string{}
-
-	if len(metadataIds) > 1 {
-		toDelete = append(toDelete, metadataIds...)
-		toDelete = append(toDelete, dnsIds...)
-	} else if len(dnsIds) > 1 {
-		toDelete = append(toDelete, dnsIds...)
-	} else if first && len(dnsIds) == 1 {
-		dnsResult, err := dockerClient.ContainerInspect(context.Background(), dnsIds[0], client.ContainerInspectOptions{})
-		if err != nil {
-			return err
-		}
-		if dnsResult.Container.HostConfig == nil {
-			return fmt.Errorf("DNS container %s has no host configuration", dnsIds[0])
-		}
-		id := dnsResult.Container.HostConfig.NetworkMode.ConnectedContainer()
-		_, err = dockerClient.ContainerInspect(context.Background(), id, client.ContainerInspectOptions{})
-		if errdefs.IsNotFound(err) {
-			logrus.Errorf("Failed to find network container [%s] for DNS %s", id, dnsIds[0])
-			toDelete = append(toDelete, dnsIds...)
-		}
-	}
-
-	for _, id := range toDelete {
-		logrus.Infof("Deleting duplicate metadata/dns service: %s", id)
-		_, err := dockerClient.ContainerRemove(context.Background(), id, client.ContainerRemoveOptions{
-			Force: true,
-		})
-		if err != nil {
-			logrus.Errorf("Failed to remove duplicate metadata/dns service: %s", id)
-		}
-	}
-
-	return nil
+	return container.StackName == "network-services" &&
+		(container.ServiceName == "metadata" || container.ServiceName == "metadata/dns" || container.ServiceName == "dns")
 }
 
 func (w *watcher) removeContainer(container metadata.Container) {
