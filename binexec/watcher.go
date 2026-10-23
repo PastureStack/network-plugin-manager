@@ -3,6 +3,7 @@ package binexec
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/PastureStack/network-plugin-manager/identity"
 	"github.com/PastureStack/network-plugin-manager/internal/cniglue"
 	"github.com/PastureStack/network-plugin-manager/internal/metadata"
+	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/events"
 	"github.com/moby/moby/client"
 	"github.com/sirupsen/logrus"
@@ -23,6 +25,7 @@ import (
 var (
 	reapplyEvery           = 5 * time.Minute
 	wrapperDriftCheckEvery = 10 * time.Second
+	providerInspectTimeout = 10 * time.Second
 	binDir                 = cniglue.CniPath[0]
 )
 
@@ -63,7 +66,7 @@ func Watch(c metadata.Client, dc *client.Client) *Watcher {
 		dc:      dc,
 		applied: map[string]string{},
 	}
-	w.onChange("")
+	w.onChangeNoError("")
 	go c.OnChange(5, w.onChangeNoError)
 	go w.watchWrapperDrift()
 	return w
@@ -86,19 +89,29 @@ func (w *Watcher) onChangeNoError(version string) {
 func (w *Watcher) watchWrapperDrift() {
 	ticker := time.NewTicker(wrapperDriftCheckEvery)
 	defer ticker.Stop()
-	for range ticker.C {
-		w.Lock()
-		if len(w.applied) != 0 && !w.wrapperFilesMatch(w.applied) {
-			logrus.Warn("CNI driver wrapper drift detected; restoring selected providers")
-			if err := w.apply(w.applied); err != nil {
-				logrus.Errorf("Failed to restore CNI driver wrappers: %v", err)
+	w.refreshProviders(context.Background(), ticker.C)
+}
+
+// Retry selection even when metadata's version and the wrapper bytes have not
+// changed: a driver can become ready after an earlier inspect/apply failure.
+func (w *Watcher) refreshProviders(ctx context.Context, ticks <-chan time.Time) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-ticks:
+			if !ok {
+				return
 			}
+			w.onChangeNoError("")
 		}
-		w.Unlock()
 	}
 }
 
 func (w *Watcher) Handle(event *events.Message) error {
+	if event == nil {
+		return nil
+	}
 	w.Lock()
 
 	changed := false
@@ -109,7 +122,15 @@ func (w *Watcher) Handle(event *events.Message) error {
 		}
 	}
 
-	w.lastApplied = time.Time{}
+	// A newly started driver is not in applied yet. Its event is only a reason
+	// to re-read the metadata allowlist, never permission to use a Docker-only
+	// provider. Ordinary workload starts must not trigger provider selection.
+	if event.Action == events.ActionStart && validBinaryName(event.Actor.Attributes["io.rancher.network.cni.binary"]) {
+		changed = true
+	}
+	if changed {
+		w.lastApplied = time.Time{}
+	}
 	w.Unlock()
 
 	if changed {
@@ -123,6 +144,10 @@ func (w *Watcher) onChange(version string) error {
 	defer w.Unlock()
 
 	binaries := map[string]string{}
+	versions := map[string]string{}
+	uncertain := map[string]map[string]bool{}
+	availableNames := map[string]bool{}
+	var selectionErrors []error
 	driverServices := map[string]metadata.Service{}
 
 	services, err := w.c.GetServices()
@@ -163,14 +188,50 @@ func (w *Watcher) onChange(version string) error {
 				binName := getBinaryName(container)
 				if binName != "" {
 					if !validBinaryName(binName) {
-						return fmt.Errorf("invalid CNI driver binary name %q", binName)
+						selectionErrors = append(selectionErrors, fmt.Errorf("invalid CNI driver binary name %q", binName))
+						continue
+					}
+					availableNames[binName] = true
+					inspectResult, err := w.inspectProvider(container.ExternalId)
+					if err != nil {
+						// NotFound is authoritative absence, not an unknown state
+						// eligible to preserve an old selected wrapper.
+						if !errdefs.IsNotFound(err) {
+							if uncertain[binName] == nil {
+								uncertain[binName] = map[string]bool{}
+							}
+							uncertain[binName][container.ExternalId] = true
+						}
+						selectionErrors = append(selectionErrors, fmt.Errorf("inspect CNI provider %s for %s: %w", container.ExternalId, binName, err))
+						continue
+					}
+					provider := inspectResult.Container
+					if provider.State == nil || !provider.State.Running || provider.State.Pid <= 0 {
+						continue
+					}
+					version := ""
+					if provider.Config != nil {
+						version = strings.TrimSpace(provider.Config.Labels["org.opencontainers.image.version"])
 					}
 					current, exists := binaries[binName]
-					if !exists || w.preferBinaryProvider(current, container.ExternalId) {
+					if !exists || preferProvider(current, versions[binName], container.ExternalId, version) {
 						binaries[binName] = container.ExternalId
+						versions[binName] = version
 					}
 				}
 			}
+		}
+	}
+	// Preserve an existing metadata-authorized provider on an unknown inspect
+	// result, but never retain one Docker has authoritatively reported stopped.
+	for name, target := range w.applied {
+		if binaries[name] == "" && uncertain[name][target] {
+			binaries[name] = target
+		}
+	}
+	for name := range availableNames {
+		if binaries[name] == "" {
+			selectionErrors = append(selectionErrors, fmt.Errorf("no running metadata-authorized CNI provider for %s", name))
 		}
 	}
 
@@ -180,10 +241,10 @@ func (w *Watcher) onChange(version string) error {
 		needsApply = true
 	}
 	if needsApply {
-		return w.apply(binaries)
+		selectionErrors = append(selectionErrors, w.apply(binaries))
 	}
 
-	return nil
+	return errors.Join(selectionErrors...)
 }
 
 func (w *Watcher) wrapperFilesMatch(binaries map[string]string) bool {
@@ -214,41 +275,68 @@ func (w *Watcher) apply(binaries map[string]string) error {
 		return fmt.Errorf("create CNI wrapper directory: %w", err)
 	}
 
-	var lastErr error
+	var applyErrors []error
+	unavailable := map[string]bool{}
+	updated := make(map[string]string, len(w.applied))
+	for name, target := range w.applied {
+		updated[name] = target
+	}
 	for name, target := range binaries {
-		inspectResult, err := w.dc.ContainerInspect(context.Background(), target, client.ContainerInspectOptions{})
+		inspectResult, err := w.inspectProvider(target)
 		if err != nil {
-			lastErr = err
-			break
+			if errdefs.IsNotFound(err) && updated[name] == target {
+				unavailable[name] = true
+			}
+			applyErrors = append(applyErrors, fmt.Errorf("inspect selected CNI provider %s for %s: %w", target, name, err))
+			continue
 		}
 
 		container := inspectResult.Container
-		if container.State == nil || container.State.Pid == 0 {
-			lastErr = fmt.Errorf("container is not running")
-			break
+		if container.State == nil || !container.State.Running || container.State.Pid <= 0 {
+			if updated[name] == target {
+				unavailable[name] = true
+			}
+			applyErrors = append(applyErrors, fmt.Errorf("CNI provider %s for %s is not running", target, name))
+			continue
 		}
 
 		p := filepath.Join(binDir, name)
 		content := renderDriverWrapper(target, name)
 		logrus.Debugf("Writing %s:\n%s", p, content)
 		if err := writeWrapperAtomic(p, content); err != nil {
-			lastErr = err
-			break
+			applyErrors = append(applyErrors, err)
+			continue
 		}
+		updated[name] = target
 	}
 
-	if lastErr == nil {
-		w.applied = binaries
+	for name, target := range w.applied {
+		if _, retained := binaries[name]; retained && !unavailable[name] {
+			continue
+		}
+		// Remove only this watcher's exact wrapper; do not unlink another owner's
+		// file or disturb independent providers when a driver is unavailable.
+		p := filepath.Join(binDir, name)
+		if wrapperFileMatches(p, renderDriverWrapper(target, name)) {
+			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+				applyErrors = append(applyErrors, fmt.Errorf("remove unavailable CNI provider wrapper %s: %w", name, err))
+				continue
+			}
+		}
+		delete(updated, name)
+	}
+	w.applied = updated
+	if len(applyErrors) == 0 {
 		w.lastApplied = time.Now()
 	}
 
-	return lastErr
+	return errors.Join(applyErrors...)
 }
 
-func (w *Watcher) preferBinaryProvider(current, candidate string) bool {
-	currentVersion := w.containerImageVersion(current)
-	candidateVersion := w.containerImageVersion(candidate)
-	return preferProvider(current, currentVersion, candidate, candidateVersion)
+func (w *Watcher) inspectProvider(target string) (client.ContainerInspectResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), providerInspectTimeout)
+	defer cancel()
+	return w.dc.ContainerInspect(ctx, target, client.ContainerInspectOptions{})
 }
 
 func preferProvider(current, currentVersion, candidate, candidateVersion string) bool {
@@ -262,17 +350,6 @@ func preferProvider(current, currentVersion, candidate, candidateVersion string)
 		return candidateNumeric
 	}
 	return candidate < current
-}
-
-func (w *Watcher) containerImageVersion(containerID string) string {
-	if w.dc == nil {
-		return ""
-	}
-	result, err := w.dc.ContainerInspect(context.Background(), containerID, client.ContainerInspectOptions{})
-	if err != nil || result.Container.Config == nil || result.Container.Config.Labels == nil {
-		return ""
-	}
-	return strings.TrimSpace(result.Container.Config.Labels["org.opencontainers.image.version"])
 }
 
 func writeWrapperAtomic(path string, content []byte) (err error) {

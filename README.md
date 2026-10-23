@@ -10,7 +10,18 @@ PastureStack is an independent community effort to preserve, audit, and moderniz
 
 ## Runtime image
 
-This source targets `v0.8.24`. Release assets include source and image
+Current source targets `v0.8.25`; only tags listed as published GitHub releases
+are installable. A source target is not publication or real-host acceptance.
+This update repairs CNI provider handoff during retained old/new driver
+overlap: only metadata-authorized local drivers with a running Docker process
+and positive PID can be selected. Selected-driver death and new-driver startup
+trigger reselection; periodic bounded retries also recover from transient
+Metadata/inspect errors even without wrapper drift or another version change.
+Independent CNI binaries reconcile separately, preserving usable providers on
+unknown inspection results without discovering unauthorized Docker providers.
+Numeric version preference and existing plugin/firewall ownership remain intact.
+
+Release assets include source and image
 SBOMs, SHA256 checksums, and build provenance. Obtain the immutable image
 identity from the checksum-covered `published.txt` in the release. Catalog
 integration and real-host lifecycle checks are separate from image publication.

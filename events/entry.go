@@ -29,16 +29,7 @@ type DockerEventsProcessor struct {
 }
 
 func (processor *DockerEventsProcessor) Process() error {
-	networkHandler := &NetworkManagerHandler{nm: processor.nm}
-	handlers := map[mobyevents.Action][]Handler{
-		mobyevents.ActionStart: {
-			processor.bw,
-			&StartHandler{Client: processor.dockerClient},
-			networkHandler,
-		},
-		mobyevents.ActionDie: {networkHandler},
-	}
-
+	handlers := processor.eventHandlers()
 	router, err := NewEventRouter(processor.poolSize, processor.poolSize, processor.dockerClient, handlers)
 	if err != nil {
 		return err
@@ -63,4 +54,16 @@ func (processor *DockerEventsProcessor) Process() error {
 		router.processEvent(context.Background(), event)
 	}
 	return nil
+}
+
+func (processor *DockerEventsProcessor) eventHandlers() map[mobyevents.Action][]Handler {
+	networkHandler := &NetworkManagerHandler{nm: processor.nm}
+	return map[mobyevents.Action][]Handler{
+		mobyevents.ActionStart: {
+			processor.bw,
+			&StartHandler{Client: processor.dockerClient},
+			networkHandler,
+		},
+		mobyevents.ActionDie: {processor.bw, networkHandler},
+	}
 }
