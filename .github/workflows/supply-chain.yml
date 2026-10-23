@@ -81,6 +81,24 @@ jobs:
             --skip-db-update --offline-scan --format cyclonedx \
             --output /evidence/source.cdx.json /work
 
+      - name: Verify Dapper CLI security inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --file Dockerfile.dapper --tag local/network-plugin-dapper:security .
+          docker run --rm --entrypoint go local/network-plugin-dapper:security version -m /usr/bin/docker /usr/local/libexec/docker/cli-plugins/docker-buildx \
+            | tee evidence/dapper-tools-go-version.txt
+          mkdir -p "$RUNNER_TEMP/dapper-tools"
+          container=$(docker create local/network-plugin-dapper:security)
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/usr/bin/docker" "$RUNNER_TEMP/dapper-tools/docker"
+          docker cp "$container:/usr/local/libexec/docker/cli-plugins/docker-buildx" "$RUNNER_TEMP/dapper-tools/docker-buildx"
+          docker run --rm -v "$RUNNER_TEMP/dapper-tools:/work:ro" -v "$PWD/evidence:/evidence" \
+            -v "$RUNNER_TEMP/trivy-cache:/root/.cache/trivy" "$TRIVY_IMAGE" rootfs \
+            --skip-db-update --offline-scan --scanners vuln \
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --exit-code 1 \
+            --format json --output /evidence/dapper-tools-security.json /work
+
       - name: Build reproducible binary and one runtime image
         shell: bash
         run: |
