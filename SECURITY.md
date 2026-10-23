@@ -14,7 +14,7 @@ Network Plugin Manager is a privileged per-host system service. A compromise can
 ## Build requirements
 
 - Build from the public source commit named by `org.opencontainers.image.revision`.
-- Use Go 1.27.0, verify `go.sum`, and build from the committed vendor tree without network fallback.
+- Use Go 1.27.3, verify `go.sum`, and build from the committed vendor tree without network fallback.
 - Resolve exact direct Alpine runtime package versions from the pinned 3.23 branch and retain the resolved package manifest.
 - Keep the runtime base image digest-pinned.
 - Do not install Docker CLI in the runtime image; use only the bounded Docker socket operations implemented by this service.

@@ -1,5 +1,7 @@
 # PastureStack Network Plugin Manager
 
+Current source builds use Go 1.27.3 while the Go language minimum remains 1.26.0. The Alpine 3.23 runtime pins `ca-certificates` 20261020-r0. These source inputs take effect in newly built artifacts; existing published release coordinates below describe their original artifacts.
+
 Network Plugin Manager reconciles host routes, CNI configuration, ARP entries, connection tracking, host-port rules, and network-driver helpers from PastureStack metadata. It is a privileged system component deployed once per host by the PastureStack infrastructure catalog.
 
 PastureStack is an independent community effort to preserve, audit, and modernize the Rancher 1.6 ecosystem. It is not affiliated with or endorsed by Rancher Labs or SUSE.
@@ -164,7 +166,7 @@ tested Docker version and host configuration.
 
 ## Build and test
 
-The maintained source uses Go Modules with Go 1.27.0, Moby API 1.55.0/client 0.5.1, CNI 1.3.0, and CNI plugins 1.9.1. The old 2016 Docker Engine API, fsouza event client, Rancher cniglue/event-subscriber helpers, and GOPATH dependency path are no longer compiled. The runtime talks to the mounted Docker socket through the bounded Moby client and two small `curl`/`jq` compatibility calls; it no longer bundles a second Docker CLI.
+The maintained source uses Go Modules with Go 1.27.3, Moby API 1.55.0/client 0.5.1, CNI 1.3.0, and CNI plugins 1.9.1. The old 2016 Docker Engine API, fsouza event client, Rancher cniglue/event-subscriber helpers, and GOPATH dependency path are no longer compiled. The runtime talks to the mounted Docker socket through the bounded Moby client and two small `curl`/`jq` compatibility calls; it no longer bundles a second Docker CLI.
 
 The Alpine 3.23 base image is digest-pinned. Direct runtime packages are exact-version locked in `alpine-apk.lock`, and the complete resolved APK manifest is retained in the image as build evidence. The runtime no longer inherits Ubuntu's unrelated `rust-coreutils` and system package vulnerability surface. The image exporter normalizes file timestamps to the source commit time.
 

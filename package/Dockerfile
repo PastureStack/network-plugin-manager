@@ -22,12 +22,15 @@ RUN set -eux; \
         "jq=${ALPINE_APK_JQ_VERSION}" \
         "libcrypto3=${ALPINE_APK_LIBCRYPTO3_VERSION}" \
         "libssl3=${ALPINE_APK_LIBSSL3_VERSION}" \
+        "musl=${ALPINE_APK_MUSL_VERSION}" \
+        "musl-utils=${ALPINE_APK_MUSL_UTILS_VERSION}" \
         "net-tools=${ALPINE_APK_NET_TOOLS_VERSION}" \
         "nftables=${ALPINE_APK_NFTABLES_VERSION}" \
         "procps-ng=${ALPINE_APK_PROCPS_NG_VERSION}" \
         "psmisc=${ALPINE_APK_PSMISC_VERSION}" \
         "tar=${ALPINE_APK_TAR_VERSION}" \
-        "util-linux=${ALPINE_APK_UTIL_LINUX_VERSION}"; \
+        "util-linux=${ALPINE_APK_UTIL_LINUX_VERSION}" \
+        "zlib=${ALPINE_APK_ZLIB_VERSION}"; \
     { \
         printf 'record\tname-version\n'; \
         printf 'metadata\talpine-branch-%s\n' "${ALPINE_BRANCH}"; \

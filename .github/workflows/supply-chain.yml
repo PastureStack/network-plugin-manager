@@ -34,11 +34,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/go1.27.0.linux-amd64.tar.gz"
+          archive="$RUNNER_TEMP/go1.27.3.linux-amd64.tar.gz"
           curl --fail --silent --show-error --location \
-            --output "$archive" 'https://go.dev/dl/go1.27.0.linux-amd64.tar.gz'
+            --output "$archive" 'https://go.dev/dl/go1.27.3.linux-amd64.tar.gz'
           printf '%s  %s\n' \
-            '675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685' \
+            '65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40' \
             "$archive" | sha256sum --check
           tar -C "$RUNNER_TEMP" -xzf "$archive"
           export PATH="$RUNNER_TEMP/go/bin:$PATH"

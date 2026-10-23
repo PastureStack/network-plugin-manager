@@ -16,14 +16,14 @@ bash -n scripts/build scripts/check-build-downloads scripts/ci scripts/entry scr
 awk -F '\t' 'NR==1 {ok=($1=="key" && $2=="value" && NF==2); next} NF!=2 || $1!~/^[a-z0-9_]+$/ || $2=="" || seen[$1]++ {ok=0} END {exit ok?0:1}' \
     build-inputs.lock.tsv || fail invalid_lock_tsv
 require_lock schema pasturestack.network-plugin-manager-build/v3
-require_lock golang_image golang:1.27.0-bookworm@sha256:484ef6066fa69acb059fdfeda7ba2b8f7391f2ef6abc6f9b8411e669ebd56466
+require_lock golang_image golang:1.27.3-bookworm@sha256:972b4110ba0f47539a975c31e52c64765e1ff19f2d74469ae4a595c6676e80a5
 require_lock docker_cli_image docker:29.7.2-cli@sha256:000bb62ff495f986c9f5578eb67cc2cb98b91138eda81d7762d5371eb8a497fe
 require_lock alpine_image alpine:3.23@sha256:1beb0dc0a51de7ff38e3b5274078a2e0b81113ba5c7535e1a03d5913a5edbda3
 require_lock alpine_branch 3.23
 require_lock trivy_image ghcr.io/aquasecurity/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
 
 require_fixed go.mod $'go 1.26.0' go_language_floor
-require_fixed go.mod $'toolchain go1.27.0' go_toolchain
+require_fixed go.mod $'toolchain go1.27.3' go_toolchain
 require_fixed Dockerfile.dapper "FROM $(lock_value docker_cli_image) AS docker-cli" dapper_docker_image
 require_fixed Dockerfile.dapper "FROM $(lock_value golang_image)" dapper_go_image
 require_fixed package/Dockerfile "FROM $(lock_value alpine_image)" runtime_base
@@ -58,4 +58,4 @@ require_fixed .github/workflows/supply-chain.yml 'binary-security.json' binary_s
 require_fixed .github/workflows/supply-chain.yml 'image-security.json' image_scan
 require_fixed .github/workflows/supply-chain.yml 'image.cdx.json' image_sbom
 
-printf 'NETWORK_PLUGIN_MANAGER_POLICY_OK language_floor=1.26.0 toolchain=1.27.0 modules=1 docker_sdk=moby-v29 cni=1.3 runtime_docker_cli=0 custom_builder=0 scans=source,binary,image\n'
+printf 'NETWORK_PLUGIN_MANAGER_POLICY_OK language_floor=1.26.0 toolchain=1.27.3 modules=1 docker_sdk=moby-v29 cni=1.3 runtime_docker_cli=0 custom_builder=0 scans=source,binary,image\n'
